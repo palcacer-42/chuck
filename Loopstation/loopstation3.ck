@@ -5,13 +5,14 @@
 adc => Gain input => blackhole;
 input.gain(0.8);
 
-SndBuf player => dac;
-player.gain(0.9);
+// Main loop using LiSa buffer
+LiSa mainLoop => dac;
+adc => mainLoop;
+mainLoop.gain(0.9);
+mainLoop.maxVoices(1);
 
 Gain clickGain => dac;
 clickGain.gain(0.5);
-
-"loop.wav"      => string mainLoop;
 
 120.0 => float bpm;
 (60.0 / bpm) :: second => dur beatDur;
@@ -23,19 +24,21 @@ dur loopLength;
 0 => int loopExists;
 16 => int ledCount;
 
+// Mode selection: 0 = free mode, 1 = measure mode (4-beat)
+0 => int measureMode;
+
 // Multiple overdubs support
-SndBuf overdubPlayers[10]; // Support up to 10 overdubs
-string overdubFiles[10];
+LiSa overdubPlayers[10]; // Support up to 10 overdubs
 0 => int overdubCount;
 int overdubActive[10]; // Track which overdubs are active
 1 => int mainLoopActive; // Track if main loop is active
 
-// Initialize overdub players and filenames
+// Initialize overdub players with LiSa buffers
 for (0 => int i; i < 10; i++)
 {
-    overdubPlayers[i] => dac;
+    adc => overdubPlayers[i] => dac;
     overdubPlayers[i].gain(0.9);
-    "temp_loop" + i + ".wav" => overdubFiles[i];
+    overdubPlayers[i].maxVoices(1);
     1 => overdubActive[i]; // Start active by default
 }
 
@@ -100,14 +103,35 @@ fun void resetTapCount()
 }
 
 // ------------------------------------------------------
-// Record Initial 4-Beat Loop
+// Record Initial Loop (Measure or Free Mode)
 // ------------------------------------------------------
 fun void recordLoop()
 {
-    /*if (isRecording || loopExists) return;*/
-    1 => isRecording;
+    if (measureMode)
+    {
+        // MEASURE MODE: 4-beat loop
+        recordMeasureLoop();
+    }
+    else
+    {
+        // FREE MODE: Toggle recording on/off
+        if (isRecording)
+        {
+            // Stop recording
+            stopFreeRecording();
+        }
+        else
+        {
+            // Start recording
+            startFreeRecording();
+        }
+    }
+}
 
-    WvOut w => blackhole;
+// Record 4-beat loop (measure mode)
+fun void recordMeasureLoop()
+{
+    1 => isRecording;
 
     // If playback is active, wait for the next loop to start for sync
     if (isPlaying)
@@ -130,10 +154,13 @@ fun void recordLoop()
         }
     }
 
-    w.wavFilename(mainLoop);
-    adc => w;
-
     4 * beatDur => loopLength;
+    
+    // Configure LiSa buffer for main loop
+    mainLoop.duration(loopLength);
+    mainLoop.recPos(0::ms);
+    mainLoop.recRamp(50::ms);
+    mainLoop.record(1);  // Start recording
 
     for (0 => int s; s < 16; s++)
     {
@@ -141,18 +168,51 @@ fun void recordLoop()
         (loopLength / 16) => now;
     }
 
-    w.closeFile();
-    adc =< w;
+    mainLoop.record(0);  // Stop recording
     0 => isRecording;
     1 => loopExists;
     <<< "LOOP RECORDED!" >>>;
-
-    // Small delay to ensure file is written and yield to scheduler
-    50::ms => now;
     
     // Start playback directly (not spawned - we're already in a spawned shred)
     startPlayback();
 }
+
+// Start free recording
+fun void startFreeRecording()
+{
+    1 => isRecording;
+    now => time recordStart;
+    
+    <<< "● RECORDING... Press [r] again to stop" >>>;
+    
+    // Set a large buffer size (e.g., 60 seconds max)
+    60::second => dur maxDuration;
+    mainLoop.duration(maxDuration);
+    mainLoop.recPos(0::ms);
+    mainLoop.recRamp(50::ms);
+    mainLoop.record(1);  // Start recording
+}
+
+// Stop free recording and start playback
+fun void stopFreeRecording()
+{
+    mainLoop.record(0);  // Stop recording
+    
+    // Calculate actual recorded length
+    now - recordStart => loopLength;
+    
+    // Adjust buffer to actual length
+    mainLoop.duration(loopLength);
+    
+    0 => isRecording;
+    1 => loopExists;
+    <<< "○ LOOP RECORDED!", (loopLength/second), "seconds" >>>;
+    
+    // Start playback
+    startPlayback();
+}
+
+time recordStart;  // Track when recording started
 
 // ------------------------------------------------------
 // Metronome Click
@@ -180,16 +240,17 @@ fun void startPlayback()
     if (!loopExists) return;
     1 => isPlaying;
 
-    player.read(mainLoop);
-    0 => player.pos;
-    mainLoopActive => player.play;
+    // Start main loop playback
+    mainLoop.playPos(0::ms);
+    mainLoop.loop(1);  // Enable looping
+    mainLoop.play(mainLoopActive);
 
     // Start all existing overdubs
     for (0 => int i; i < overdubCount; i++)
     {
-        overdubPlayers[i].read(overdubFiles[i]);
-        0 => overdubPlayers[i].pos;
-        overdubActive[i] => overdubPlayers[i].play;
+        overdubPlayers[i].playPos(0::ms);
+        overdubPlayers[i].loop(1);
+        overdubPlayers[i].play(overdubActive[i]);
     }
 
     loopStart.broadcast();
@@ -199,42 +260,42 @@ fun void startPlayback()
     while (isPlaying && loopExists)
     {
         1 => int stepDone;
-        for (0 => int s; s < 16; s++)
+        
+        if (measureMode)
         {
-            if (!isPlaying)
+            // MEASURE MODE: Show LED ring
+            for (0 => int s; s < 16; s++)
             {
-                0 => stepDone;
-                break;
+                if (!isPlaying)
+                {
+                    0 => stepDone;
+                    break;
+                }
+                showLED(s);
+                (loopLength / 16) => now;
             }
-            showLED(s);
-            (loopLength / 16) => now;
         }
+        else
+        {
+            // FREE MODE: Just loop and broadcast
+            loopLength => now;
+        }
+        
         if (!stepDone) break;
 
         if (isPlaying)
         {
-            0 => player.pos;
-            mainLoopActive => player.play;
-
-            // Restart all overdubs
-            for (0 => int i; i < overdubCount; i++)
-            {
-                0 => overdubPlayers[i].pos;
-                overdubActive[i] => overdubPlayers[i].play;
-            }
-
             loopStart.broadcast();
         }
     }
 
-    0 => player.pos;
-    0 => player.play;
+    // Stop playback
+    mainLoop.play(0);
 
     // Stop all overdubs
     for (0 => int i; i < overdubCount; i++)
     {
-        0 => overdubPlayers[i].pos;
-        0 => overdubPlayers[i].play;
+        overdubPlayers[i].play(0);
     }
 
     0 => isPlaying;
@@ -264,34 +325,34 @@ fun void recordOverdub()
         return;
     }
 
-    <<< "OVERDUB", overdubCount + 1, "– waiting for next loop…" >>>;
-    
-    // Wait for the next loop to start
-    loopStart => now;
+    if (measureMode)
+    {
+        // MEASURE MODE: Wait for loop start for sync
+        <<< "OVERDUB", overdubCount + 1, "– waiting for next loop…" >>>;
+        loopStart => now;
+    }
     
     1 => isOverdubbing;
-    <<< "OVERDUB", overdubCount + 1, "RECORDING (4 beats)..." >>>;
+    <<< "OVERDUB", overdubCount + 1, "RECORDING..." >>>;
     
-    // Start recording to a new overdub file
-    WvOut w => blackhole;
-    w.wavFilename(overdubFiles[overdubCount]);
-    adc => w;
+    // Configure LiSa buffer for this overdub
+    overdubPlayers[overdubCount].duration(loopLength);
+    overdubPlayers[overdubCount].recPos(0::ms);
+    overdubPlayers[overdubCount].recRamp(50::ms);
+    overdubPlayers[overdubCount].record(1);
     
     // Record for exactly one loop length
     loopLength => now;
     
     // Stop recording
-    w.closeFile();
-    adc =< w;
+    overdubPlayers[overdubCount].record(0);
     
     0 => isOverdubbing;
     
-    // Small delay to ensure file is written
-    10::ms => now;
-    
-    // Load the new file into the corresponding player and set position
-    overdubPlayers[overdubCount].read(overdubFiles[overdubCount]);
-    0 => overdubPlayers[overdubCount].pos;
+    // Start playback of the new overdub
+    overdubPlayers[overdubCount].playPos(0::ms);
+    overdubPlayers[overdubCount].loop(1);
+    overdubPlayers[overdubCount].play(1);
     
     overdubCount++;
     <<< "OVERDUB", overdubCount, "RECORDED! Total overdubs:", overdubCount >>>;
@@ -319,34 +380,42 @@ fun void redoLastOverdub()
     }
 
     overdubCount - 1 => int lastIndex;
-    <<< "RE-RECORDING overdub", overdubCount, "– waiting for next loop…" >>>;
     
-    // Wait for the next loop to start
-    loopStart => now;
+    if (measureMode)
+    {
+        // MEASURE MODE: Wait for loop start for sync
+        <<< "RE-RECORDING overdub", overdubCount, "– waiting for next loop…" >>>;
+        loopStart => now;
+    }
+    else
+    {
+        <<< "RE-RECORDING overdub", overdubCount, "..." >>>;
+    }
     
     1 => isOverdubbing;
     <<< "RE-RECORDING overdub", overdubCount, "(4 beats)..." >>>;
     
-    // Start recording to replace the last overdub file
-    WvOut w => blackhole;
-    w.wavFilename(overdubFiles[lastIndex]);
-    adc => w;
+    // Stop playback of the last overdub and clear it
+    overdubPlayers[lastIndex].play(0);
+    
+    // Re-configure LiSa buffer (this clears the old content)
+    overdubPlayers[lastIndex].duration(loopLength);
+    overdubPlayers[lastIndex].recPos(0::ms);
+    overdubPlayers[lastIndex].recRamp(50::ms);
+    overdubPlayers[lastIndex].record(1);
     
     // Record for exactly one loop length
     loopLength => now;
     
     // Stop recording
-    w.closeFile();
-    adc =< w;
+    overdubPlayers[lastIndex].record(0);
     
     0 => isOverdubbing;
     
-    // Small delay to ensure file is written
-    10::ms => now;
-    
-    // Reload the file
-    overdubPlayers[lastIndex].read(overdubFiles[lastIndex]);
-    0 => overdubPlayers[lastIndex].pos;
+    // Start playback of the re-recorded overdub
+    overdubPlayers[lastIndex].playPos(0::ms);
+    overdubPlayers[lastIndex].loop(1);
+    overdubPlayers[lastIndex].play(1);
     
     <<< "OVERDUB", overdubCount, "RE-RECORDED!" >>>;
 }
@@ -355,16 +424,40 @@ fun void redoLastOverdub()
 // MAIN LOOP
 // ------------------------------------------------------
 <<< "\n=== VINTAGE LOOP STATION ===" >>>;
-<<< "tap a tempo then record inital loop and then make as many overdubs as you want!" >>>;
-<<< "[t] Tap | [r] Record | [p] Play/Stop | [o] Add Overdub | [u] Redo Last | [0-9] Toggle Loops | [q] Quit" >>>;
+<<< "\nSelect mode:" >>>;
+<<< "[1] Measure Mode - 4-beat loops with tap tempo" >>>;
+<<< "[2] Free Mode - Record start/stop on keypress, any duration" >>>;
 
+// Mode selection
 KBHit kb;
+1 => int modeSelected;
+while (modeSelected)
+{
+    kb => now;
+    kb.getchar() => int k;
+    
+    if (k == '1')
+    {
+        1 => measureMode;
+        0 => modeSelected;
+        <<< "\n✓ MEASURE MODE selected" >>>;
+        <<< "[t] Tap Tempo | [r] Record 4-beat loop | [p] Play/Stop | [o] Add Overdub | [u] Redo Last | [0-9] Toggle Loops | [q] Quit" >>>;
+    }
+    else if (k == '2')
+    {
+        0 => measureMode;
+        0 => modeSelected;
+        <<< "\n✓ FREE MODE selected" >>>;
+        <<< "[r] Start Recording | [r again] Stop & Loop | [p] Play/Stop | [o] Add Overdub | [u] Redo Last | [0-9] Toggle Loops | [q] Quit" >>>;
+    }
+}
+
 while (true)
 {
     kb => now;
     kb.getchar() => int k;
 
-    if (k == 't') spork ~ tapTempo();
+    if (k == 't' && measureMode) spork ~ tapTempo();
     else if (k == 'r' && !isRecording) spork ~ recordLoop();
     else if (k == 'p')
     {
@@ -387,9 +480,10 @@ while (true)
         if (loopNum == 0)
         {
             // Toggle main loop
-            if (loopExists)
+            if (loopExists && isPlaying)
             {
                 !mainLoopActive => mainLoopActive;
+                mainLoop.play(mainLoopActive);  // Apply the change immediately
                 if (mainLoopActive) <<< "Main loop ON" >>>;
                 else <<< "Main loop OFF" >>>;
             }
@@ -397,9 +491,10 @@ while (true)
         else
         {
             loopNum - 1 => int overdubIndex;
-            if (overdubIndex < overdubCount)
+            if (overdubIndex < overdubCount && isPlaying)
             {
                 !overdubActive[overdubIndex] => overdubActive[overdubIndex];
+                overdubPlayers[overdubIndex].play(overdubActive[overdubIndex]);  // Apply immediately
                 if (overdubActive[overdubIndex]) <<< "Overdub", loopNum, "ON" >>>;
                 else <<< "Overdub", loopNum, "OFF" >>>;
             }
@@ -407,7 +502,7 @@ while (true)
     }
     else if (k == 'q')
     {
-        <<< "Saved as 'loop.wav'. Bye!" >>>;
+        <<< "Loop station stopped. Bye!" >>>;
         me.exit();
     }
 }
