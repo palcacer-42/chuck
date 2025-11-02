@@ -31,7 +31,7 @@ adc => Gain voiceIn => PitShift pitcher => Gain wet => dac;
 // Tambien mantener algo de senal original para claridad
 voiceIn => Gain dry => dac;
 
-2.0 => voiceIn.gain;  // Aumentado de 0.6 a 2.0
+0.6 => voiceIn.gain;
 0.9 => wet.gain;    // Senal procesada
 0.1 => dry.gain;    // Senal original (10% para naturalidad)
 
@@ -58,7 +58,7 @@ complex spectrum[FFT_SIZE/2];
 0.0 => float targetPitch;        // Frecuencia objetivo (Hz)
 0.0 => float currentShift;       // Shift actual aplicado
 0.0 => float voiceEnergy;        // Energia de la senal
-0.001 => float ENERGY_THRESHOLD;  // Umbral de activacion (reducido de 0.05 a 0.001)
+0.05 => float ENERGY_THRESHOLD;  // Umbral de activacion
 
 <<< "? Variables inicializadas" >>>;
 
@@ -124,9 +124,6 @@ fun void pitchDetector() {
     while (true) {
         FFT_SIZE::samp => now;
         
-        // Computar FFT
-        fft.upchuck();
-        
         // Obtener espectro
         fft.spectrum(spectrum);
         
@@ -160,8 +157,8 @@ fun void pitchDetector() {
             }
             
             // Convertir bin a frecuencia
-            if (maxMag > 0.001 && maxBin > 0) {
-                (maxBin $ float) * (second / samp) / (FFT_SIZE $ float) => float freq;
+            if (maxMag > 0.01 && maxBin > 0) {
+                maxBin * second / samp / (FFT_SIZE/2) => float freq;
                 
                 // Verificar que este en rango valido
                 if (freq > 80 && freq < 800) {
@@ -316,36 +313,44 @@ fun void scaleChanger() {
 
 fun void visualMonitor() {
     while (true) {
-        200::ms => now;
+        500::ms => now;
         
-        // Build status line
-        "" => string status;
-        
-        if (voiceEnergy > ENERGY_THRESHOLD && detectedPitch > 50) {
-            // ACTIVE
+        if (voiceEnergy > ENERGY_THRESHOLD) {
+            <<< "" >>>;
+            <<< "???????????????????????????????????" >>>;
+            <<< "? AUTOTUNE ACTIVO" >>>;
+            <<< "???????????????????????????????????" >>>;
+            
+            // Mostrar pitch detectado
             freqToMidi(detectedPitch) => float midiDetected;
-            getMidiNoteName(Math.round(midiDetected) $ int) => string noteDetected;
+            <<< "Detectado:", Math.round(detectedPitch), "Hz ?", 
+            getMidiNoteName(Math.round(midiDetected) $ int) >>>;
             
+            // Mostrar pitch objetivo
             freqToMidi(targetPitch) => float midiTarget;
-            getMidiNoteName(Math.round(midiTarget) $ int) => string noteTarget;
+            <<< "Corregido:", Math.round(targetPitch), "Hz ?", 
+            getMidiNoteName(Math.round(midiTarget) $ int) >>>;
             
+            // Mostrar correccion aplicada
             (currentShift - 1.0) * 100 => float cents;
+            <<< "Ajuste:", Math.round(cents), "cents" >>>;
             
-            // Build VU meter
-            "" => string vuMeter;
-            Math.round(voiceEnergy * 50) $ int => int vuLevel;
-            if (vuLevel > 15) 15 => vuLevel;
-            for (0 => int i; i < vuLevel; i++) "█" +=> vuMeter;
+            // Barra visual de correccion
+            "" => string bar;
+            Math.round(Math.fabs(cents) / 5) $ int => int barLen;
+            for (0 => int i; i < barLen; i++) "?" +=> bar;
             
-            "● " + noteDetected + " → " + noteTarget + " | " + Math.round(cents) + "c " + vuMeter => status;
+            if (cents > 0) {
+                <<< "? ", bar >>>;
+            } else if (cents < 0) {
+                <<< "? ", bar >>>;
+            } else {
+                <<< "? Afinado!" >>>;
+            }
         } else {
-            // WAITING
-            "○ Waiting... E:" + Math.round(voiceEnergy * 10000) + " P:" + Math.round(detectedPitch) + "Hz" => status;
+            <<< "?  Esperando voz... (energia:", 
+            Math.round(voiceEnergy * 1000), ")" >>>;
         }
-        
-        // Single line output with carriage return (like loopstation)
-        chout <= "\r" <= status <= "                    ";
-        chout.flush();
     }
 }
 
@@ -374,10 +379,10 @@ spork ~ visualMonitor();
 <<< "? Calibracion completada" >>>;
 <<< "  Nivel de ruido:", Math.round(voiceEnergy * 1000) >>>;
 
-// Keep threshold low and fixed for sensitive detection
-0.001 => ENERGY_THRESHOLD;
+// Ajustar threshold
+voiceEnergy * 2.0 => ENERGY_THRESHOLD;
 
-<<< "  Threshold fijo:", Math.round(ENERGY_THRESHOLD * 1000) >>>;
+<<< "  Threshold ajustado:", Math.round(ENERGY_THRESHOLD * 1000) >>>;
 <<< "" >>>;
 
 // ==================== INSTRUCCIONES ====================
