@@ -14,17 +14,24 @@ A real-time multi-track loop station built in Faust with GUI controls. Features 
 ## Quick Start
 
 ### 1. Compile and Run
-```bash
-cd /Users/palcacer/Documents/CODE/Chuck
-./run_faust.sh faust_projects/examples/loopstation.dsp
-```
 
-Or manually:
+**⚠️ Important:** The GUI version (faust2caqt) currently has code signing issues on macOS. Use the console version instead:
+
 ```bash
 cd faust_projects/examples
-faust2caqt loopstation.dsp
-./loopstation
+faust2caconsole loopstation.dsp
+/Users/palcacer/Documents/CODE/Chuck/faust_projects/examples/loopstation
 ```
+
+**Known Issues:**
+- The faust2caqt (Qt GUI version) fails with code signature errors on macOS 26.1
+- The console version works but has no GUI controls
+- Type 'q' to quit the console version
+
+**Alternative - Use Faust Web IDE:**
+1. Go to https://faustide.grame.fr/
+2. Copy and paste the loopstation.dsp code
+3. Run in browser with full GUI controls
 
 ### 2. Basic Workflow
 
@@ -124,6 +131,19 @@ Edit `loopstation.dsp` to:
 - Add more effects (after line: `simple_reverb`)
 
 ## Troubleshooting
+
+### Compilation fails (Code Signature Invalid)
+**Problem:** `faust2caqt` creates an app but it crashes with "Code Signature Invalid"
+**Solution:** 
+- Use `faust2caconsole` instead (no GUI but works)
+- Or use Faust Web IDE for GUI version
+- Qt/macOS version mismatch causes signing issues
+
+### Console version has no GUI controls
+**Problem:** The caconsole version runs but you can't control parameters
+**Solution:**
+- Use Faust Web IDE (https://faustide.grame.fr/) for full GUI
+- Or edit the .dsp file to set default values for parameters
 
 ### No audio recording
 - Check Input Gain is > 0

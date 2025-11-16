@@ -1,6 +1,16 @@
 // VINTAGE LOOP STATION – EXACT ○● SYMBOLS
-// Seamless, audible overdub, terminal/miniAudicle, 4-step beat
+// Seamless, audible overdub, terminal/miniAudicle, configurable beat length
+// iRig BlueTurn support via HID
 // ======================================================
+
+// HID Input Setup for BlueTurn
+Hid blueTurn;
+HidMsg blueTurnMsg;
+0 => int useHid;
+
+// BlueTurn button codes (Page Up/Down keys)
+78 => int BUTTON_1;  // Page Down - Record/Overdub
+75 => int BUTTON_2;  // Page Up - Play/Stop
 
 adc => Gain input => blackhole;
 input.gain(0.8);
@@ -22,9 +32,10 @@ dur loopLength;
 0 => int isPlaying;
 0 => int isOverdubbing;
 0 => int loopExists;
-16 => int ledCount;
+5 => int beatsPerLoop;  // Configurable beat length (default 5)
+20 => int ledCount;  // Will be updated based on beatsPerLoop
 
-// Mode selection: 0 = free mode, 1 = measure mode (4-beat)
+// Mode selection: 0 = free mode, 1 = measure mode
 0 => int measureMode;
 
 // Multiple overdubs support
@@ -60,8 +71,8 @@ fun void showLED(int pos)
         if (i == pos) leds + "●" => leds;
         else leds + "○" => leds;
         
-        // Add spacing every 4 beats for readability
-        if ((i + 1) % 4 == 0 && i < ledCount - 1) leds + "  " => leds;
+        // Add spacing every beat (4 subdivisions per beat) for readability
+        if ((i + 1) % 4 == 0 && i < ledCount - 1) leds + " " => leds;
     }
     
     // Use chout with carriage return for static display (overwrites same line)
@@ -79,7 +90,7 @@ fun void tapTempo()
     {
         (cur - lastTap) => dur iv;
         (60.0 / (iv/second)) => float newBPM;
-        if (newBPM > 40 && newBPM < 300)
+        if (newBPM > 10 && newBPM < 300)
 
         {
             newBPM => bpm;
@@ -103,13 +114,88 @@ fun void resetTapCount()
 }
 
 // ------------------------------------------------------
+// Set Beat Length
+// ------------------------------------------------------
+fun void setBeatLength()
+{
+    if (isPlaying || loopExists)
+    {
+        <<< "Cannot change beat length while loop exists. Stop and clear first." >>>;
+        return;
+    }
+    
+    <<< "\nEnter number of beats (1-9, or press 1 then 0-6 for 10-16), then press Enter: " >>>;
+    
+    "" => string input;
+    KBHit kb2;
+    1 => int listening;
+    
+    while (listening)
+    {
+        kb2 => now;
+        while (kb2.more())
+        {
+            kb2.getchar() => int k;
+            
+            // Enter key (newline or return)
+            if (k == 10 || k == 13) // ASCII newline or carriage return
+            {
+                if (input.length() > 0)
+                {
+                    Std.atoi(input) => int newBeats;
+                    if (newBeats >= 1 && newBeats <= 16)
+                    {
+                        newBeats => beatsPerLoop;
+                        beatsPerLoop * 4 => ledCount; // Update LED count
+                        <<< "✓ Beat length set to", beatsPerLoop, "beats (", ledCount, "LEDs)" >>>;
+                        0 => listening;
+                    }
+                    else
+                    {
+                        <<< "Invalid! Enter 1-16" >>>;
+                        "" => input;
+                    }
+                }
+            }
+            // Number keys 0-9 (ASCII 48-57)
+            else if (k >= 48 && k <= 57)
+            {
+                if (input.length() < 2) // Max 2 digits
+                {
+                    input + Std.itoa(k - 48) => input;
+                    // Print the actual number character
+                    chout <= Std.itoa(k - 48);
+                    chout.flush();
+                }
+            }
+            // Backspace (ASCII 8 or 127)
+            else if (k == 8 || k == 127)
+            {
+                if (input.length() > 0)
+                {
+                    input.substring(0, input.length() - 1) => input;
+                    chout <= "\b \b";
+                    chout.flush();
+                }
+            }
+            // Escape (ASCII 27) to cancel
+            else if (k == 27)
+            {
+                <<< "\nCancelled" >>>;
+                0 => listening;
+            }
+        }
+    }
+}
+
+// ------------------------------------------------------
 // Record Initial Loop (Measure or Free Mode)
 // ------------------------------------------------------
 fun void recordLoop()
 {
     if (measureMode)
     {
-        // MEASURE MODE: 4-beat loop
+        // MEASURE MODE: 5-beat loop
         recordMeasureLoop();
     }
     else
@@ -128,7 +214,7 @@ fun void recordLoop()
     }
 }
 
-// Record 4-beat loop (measure mode)
+// Record measure loop with configurable beat length
 fun void recordMeasureLoop()
 {
     1 => isRecording;
@@ -138,23 +224,23 @@ fun void recordMeasureLoop()
     {
         <<< "Waiting for next loop to start recording…" >>>;
         loopStart => now;
-        <<< "RECORDING new 4-beat loop…" >>>;
+        <<< "RECORDING new", beatsPerLoop, "-beat loop…" >>>;
     }
     else
     {
-        // Only use metronome countdown when recording the first loop
-        <<< "RECORDING 4 beats – 4-beat countdown…" >>>;
+        // Only use metronome countdown when recording the first loop (one extra beat)
+        <<< "RECORDING", beatsPerLoop + 1, "beats –", beatsPerLoop + 1, "-beat countdown…" >>>;
         
         // --- Metronome countdown ---
-        for (0 => int i; i < 4; i++)
+        for (0 => int i; i < beatsPerLoop + 1; i++)
         {
-            showLED(i * 4); // Light up 0, 4, 8, 12
+            showLED(i * 4); // Light up every 4th LED (start of each beat)
             spork ~ playClick();
             beatDur => now;
         }
     }
 
-    4 * beatDur => loopLength;
+    beatsPerLoop * beatDur => loopLength;
     
     // Configure LiSa buffer for main loop
     mainLoop.duration(loopLength);
@@ -163,8 +249,8 @@ fun void recordMeasureLoop()
     mainLoop.loopStart(0::ms);
     mainLoop.record(1);  // Start recording
 
-    // Record exactly 4 beats using simple beat timing
-    for (0 => int beat; beat < 4; beat++)
+    // Record exactly beatsPerLoop beats using simple beat timing
+    for (0 => int beat; beat < beatsPerLoop; beat++)
     {
         for (0 => int sub; sub < 4; sub++)
         {
@@ -223,6 +309,86 @@ fun void stopFreeRecording()
 time recordStart;  // Track when recording started
 
 // ------------------------------------------------------
+// HID Setup and iRig BlueTurn Handler
+// ------------------------------------------------------
+
+// Function to open BlueTurn HID device
+fun int openBlueTurn()
+{
+    // BlueTurn is device 0 based on chuck --probe
+    if (!blueTurn.openKeyboard(0))
+    {
+        <<< "Could not open BlueTurn (HID keyboard device 0)" >>>;
+        return 0;
+    }
+    <<< "✓ BlueTurn connected:", blueTurn.name() >>>;
+    return 1;
+}
+
+// BlueTurn listener thread
+fun void blueTurnListener()
+{
+    while (true)
+    {
+        blueTurn => now;
+        
+        while (blueTurn.recv(blueTurnMsg))
+        {
+            // Only respond to button down events
+            if (blueTurnMsg.isButtonDown())
+            {
+                blueTurnMsg.which => int button;
+                
+                // Button 1 (Page Down): Smart Record/Overdub
+                if (button == BUTTON_1)
+                {
+                    if (!loopExists)
+                    {
+                        if (measureMode && isRecording)
+                        {
+                            // Do nothing - already recording
+                        }
+                        else
+                        {
+                            spork ~ recordLoop();
+                        }
+                    }
+                    else if (isPlaying)
+                    {
+                        spork ~ recordOverdub();
+                    }
+                    else
+                    {
+                        spork ~ recordLoop();
+                    }
+                }
+                // Button 2 (Page Up): Play/Stop
+                else if (button == BUTTON_2)
+                {
+                    if (isPlaying) 
+                    {
+                        0 => isPlaying;
+                    }
+                    else if (loopExists) 
+                    {
+                        spork ~ startPlayback();
+                    }
+                    else 
+                    {
+                        <<< "Record first with Button 1" >>>;
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ------------------------------------------------------
+// Metronome Click
+// ------------------------------------------------------
+
+// ------------------------------------------------------
+// ------------------------------------------------------
 // Metronome Click
 // ------------------------------------------------------
 fun void playClick()
@@ -277,8 +443,8 @@ fun void startPlayback()
         
         if (measureMode)
         {
-            // MEASURE MODE: Show LED ring
-            for (0 => int s; s < 16; s++)
+            // MEASURE MODE: Show LED ring animation
+            for (0 => int s; s < ledCount; s++)
             {
                 if (!isPlaying)
                 {
@@ -286,13 +452,24 @@ fun void startPlayback()
                     break;
                 }
                 showLED(s);
-                (loopLength / 16) => now;
+                (loopLength / ledCount) => now;
             }
         }
         else
         {
-            // FREE MODE: Just loop and broadcast
-            loopLength => now;
+            // FREE MODE: Show fixed LED ring as reference
+            // Divide loop into ledCount segments for visual reference
+            (loopLength / ledCount) => dur segment;
+            for (0 => int s; s < ledCount; s++)
+            {
+                if (!isPlaying)
+                {
+                    0 => stepDone;
+                    break;
+                }
+                showLED(s);
+                segment => now;
+            }
         }
         
         if (!stepDone) break;
@@ -400,7 +577,7 @@ fun void redoLastOverdub()
     loopStart => now;
     
     1 => isOverdubbing;
-    <<< "RE-RECORDING overdub", overdubCount, "(4 beats)..." >>>;
+    <<< "RE-RECORDING overdub", overdubCount, "(", beatsPerLoop, "beats)..." >>>;
     
     // Stop playback of the last overdub and clear it
     overdubPlayers[lastIndex].play(0);
@@ -434,8 +611,24 @@ fun void redoLastOverdub()
 // MAIN LOOP
 // ------------------------------------------------------
 <<< "\n=== VINTAGE LOOP STATION ===" >>>;
+
+// Try to connect BlueTurn
+<<< "Attempting to connect iRig BlueTurn..." >>>;
+if (openBlueTurn())
+{
+    1 => useHid;
+    spork ~ blueTurnListener();
+    <<< "✓ BlueTurn ready!" >>>;
+    <<< "  Button 1 (Page Down): Record/Overdub (smart)" >>>;
+    <<< "  Button 2 (Page Up): Play/Stop" >>>;
+}
+else
+{
+    <<< "BlueTurn not found - using keyboard only" >>>;
+}
+
 <<< "\nSelect mode:" >>>;
-<<< "[1] Measure Mode - 4-beat loops with tap tempo" >>>;
+<<< "[1] Measure Mode - Configurable beat loops with tap tempo (default:", beatsPerLoop, "beats)" >>>;
 <<< "[2] Free Mode - Record start/stop on keypress, any duration" >>>;
 
 // Mode selection
@@ -450,8 +643,8 @@ while (modeSelected)
     {
         1 => measureMode;
         0 => modeSelected;
-        <<< "\n✓ MEASURE MODE selected" >>>;
-        <<< "[t] Tap Tempo | [r] Record 4-beat loop | [p] Play/Stop | [o] Add Overdub | [u] Redo Last | [0-9] Toggle Loops | [q] Quit" >>>;
+        <<< "\n✓ MEASURE MODE selected (", beatsPerLoop, "beats per loop)" >>>;
+        <<< "[t] Tap Tempo | [b] Set Beat Length | [r] Record loop | [p] Play/Stop | [o] Add Overdub | [u] Redo Last | [0-9] Toggle Loops | [q] Quit" >>>;
     }
     else if (k == '2')
     {
@@ -468,6 +661,7 @@ while (true)
     kb.getchar() => int k;
 
     if (k == 't' && measureMode) spork ~ tapTempo();
+    else if (k == 'b' && measureMode) setBeatLength();
     else if (k == 'r')
     {
         // In measure mode, only start if not already recording
