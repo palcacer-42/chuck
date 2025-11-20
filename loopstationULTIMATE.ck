@@ -61,6 +61,9 @@ Event loopStart;
 time lastTap;
 time recordStart;  // Track when recording started
 
+// Status message for display
+"" => string statusMessage;
+
 // ------------------------------------------------------
 // LED RING: EXACT ○ and ●
 // ------------------------------------------------------
@@ -78,8 +81,29 @@ fun void showLED(int pos)
         if ((i + 1) % 4 == 0 && i < ledCount - 1) leds + " " => leds;
     }
     
-    // Use chout with carriage return for static display (overwrites same line)
-    chout <= "\r" <= leds <= " ";
+    // Build track status line
+    "" => string status;
+    if (mainLoopActive) status + "[0:●]" => status;
+    else status + "[0:○]" => status;
+    
+    for (0 => int i; i < overdubCount; i++)
+    {
+        status + " " => status;
+        if (overdubActive[i]) status + "[" + (i+1) + ":●]" => status;
+        else status + "[" + (i+1) + ":○]" => status;
+    }
+    
+    // Pad all lines to clear previous content
+    statusMessage => string msg;
+    while (msg.length() < 80) msg + " " => msg;
+    while (status.length() < 80) status + " " => status;
+    while (leds.length() < 80) leds + " " => leds;
+    
+    // Display: move up two lines, show all three lines
+    chout <= "\033[2A";  // Move cursor up two lines
+    chout <= "\r" <= msg;  // Show status message
+    chout <= "\n" <= status;  // Show track status
+    chout <= "\n" <= leds;  // Show LEDs
     chout.flush();
 }
 
@@ -123,7 +147,8 @@ fun void setBeatLength()
 {
     if (isPlaying || loopExists)
     {
-        <<< "Cannot change beat length while loop exists. Stop and clear first." >>>;
+        "Cannot change beat length while loop exists. Stop and clear first." => statusMessage;
+        showLED(0);
         return;
     }
     
@@ -226,14 +251,17 @@ fun void recordMeasureLoop()
     // If playback is active, wait for the next loop to start for sync
     if (isPlaying)
     {
-        <<< "Waiting for next loop to start recording…" >>>;
+        "Waiting for next loop to start recording..." => statusMessage;
+        showLED(0);
         loopStart => now;
-        <<< "RECORDING new", beatsPerLoop, "-beat loop…" >>>;
+        "RECORDING new " + beatsPerLoop + "-beat loop..." => statusMessage;
+        showLED(0);
     }
     else
     {
-        // Only use metronome countdown when recording the first loop (one extra beat)
-        <<< "RECORDING", beatsPerLoop + 1, "beats –", beatsPerLoop + 1, "-beat countdown…" >>>;
+        // Metronome countdown with one extra beat for preparation
+        "RECORDING " + beatsPerLoop + " beats – with 1-beat countdown..." => statusMessage;
+        showLED(0);
         
         // --- Metronome countdown ---
         for (0 => int i; i < beatsPerLoop + 1; i++)
@@ -267,7 +295,8 @@ fun void recordMeasureLoop()
     mainLoop.loopEnd(loopLength);  // Set loop end AFTER recording
     0 => isRecording;
     1 => loopExists;
-    <<< "LOOP RECORDED!" >>>;
+    "LOOP RECORDED!" => statusMessage;
+    showLED(0);
     
     // Start playback directly (not spawned - we're already in a spawned shred)
     startPlayback();
@@ -280,7 +309,8 @@ fun void startFreeRecording()
     1 => freeLoop; // this loop is free-mode based
     now => recordStart;
     
-    <<< "● RECORDING... Press [r] again to stop" >>>;
+    "● RECORDING... Press [r] again to stop" => statusMessage;
+    showLED(0);  // Update display
     
     // Set a large buffer size (e.g., 60 seconds max)
     60::second => dur maxDuration;
@@ -306,7 +336,8 @@ fun void stopFreeRecording()
     
     0 => isRecording;
     1 => loopExists;
-    <<< "○ LOOP RECORDED!", (loopLength/second), "seconds" >>>;
+    "○ LOOP RECORDED! " + (loopLength/second) + " seconds" => statusMessage;
+    showLED(0);  // Update display
     
     // Start playback
     startPlayback();
@@ -322,10 +353,19 @@ fun int openBlueTurn()
     // BlueTurn is device 0 based on chuck --probe
     if (!blueTurn.openKeyboard(0))
     {
-        <<< "Could not open BlueTurn (HID keyboard device 0)" >>>;
+        <<< "✗ Could not open HID keyboard device 0" >>>;
         return 0;
     }
-    <<< "✓ BlueTurn connected:", blueTurn.name() >>>;
+    
+    // Check if it's actually the BlueTurn (not internal keyboard)
+    blueTurn.name() => string deviceName;
+    if (deviceName.find("BlueTurn") < 0 && deviceName.find("iRig") < 0)
+    {
+        <<< "✗ Device found but not BlueTurn:", deviceName >>>;
+        return 0;
+    }
+    
+    <<< "✓ BlueTurn connected:", deviceName >>>;
     return 1;
 }
 
@@ -379,7 +419,8 @@ fun void blueTurnListener()
                     }
                     else 
                     {
-                        <<< "Record first with Button 1" >>>;
+                        "Record first with Button 1" => statusMessage;
+                        showLED(0);
                     }
                 }
             }
@@ -445,7 +486,11 @@ fun void startPlayback()
 
     loopStart.broadcast();
 
-    <<< "PLAYING…" >>>;
+    "PLAYING..." => statusMessage;
+    showLED(0);
+    // Print two initial newlines to reserve space for three-line display
+    <<< "" >>>;
+    <<< "" >>>;
 
     while (isPlaying && loopExists)
     {
@@ -500,7 +545,8 @@ fun void startPlayback()
     }
 
     0 => isPlaying;
-    <<< "STOPPED." >>>;
+    "STOPPED" => statusMessage;
+    showLED(0);
 }
 
 // ------------------------------------------------------
@@ -510,28 +556,33 @@ fun void recordOverdub()
 {
     if (!isPlaying || !loopExists)
     {
-        <<< "Play loop first [p]" >>>;
+        "Play loop first [p]" => statusMessage;
+        showLED(0);
         return;
     }
 
     if (isOverdubbing)
     {
-        <<< "Overdub already in progress..." >>>;
+        "Overdub already in progress..." => statusMessage;
+        showLED(0);
         return;
     }
 
     if (overdubCount >= 10)
     {
-        <<< "Maximum overdubs (10) reached!" >>>;
+        "Maximum overdubs (10) reached!" => statusMessage;
+        showLED(0);
         return;
     }
 
     // Both modes: Wait for loop start for sync
-    <<< "OVERDUB", overdubCount + 1, "– waiting for next loop…" >>>;
+    "OVERDUB " + (overdubCount + 1) + " – waiting for next loop..." => statusMessage;
+    showLED(0);
     loopStart => now;
     
     1 => isOverdubbing;
-    <<< "OVERDUB", overdubCount + 1, "RECORDING..." >>>;
+    "OVERDUB " + (overdubCount + 1) + " RECORDING..." => statusMessage;
+    showLED(0);
     
     // Configure LiSa buffer for this overdub
     overdubPlayers[overdubCount].duration(loopLength);
@@ -556,7 +607,8 @@ fun void recordOverdub()
     overdubPlayers[overdubCount].play(1);
     
     overdubCount++;
-    <<< "OVERDUB", overdubCount, "RECORDED! Total overdubs:", overdubCount >>>;
+    "OVERDUB " + overdubCount + " RECORDED! Total: " + overdubCount => statusMessage;
+    showLED(0);
 }
 
 // Undo the last overdub (remove it completely)
@@ -564,13 +616,15 @@ fun void undoLastOverdub()
 {
     if (!loopExists)
     {
-        <<< "No loop exists." >>>;
+        "No loop exists." => statusMessage;
+        showLED(0);
         return;
     }
 
     if (overdubCount == 0)
     {
-        <<< "No overdub to undo." >>>;
+        "No overdub to undo." => statusMessage;
+        showLED(0);
         return;
     }
 
@@ -592,7 +646,8 @@ fun void undoLastOverdub()
     // Mark as inactive (will be skipped on next playback restart)
     0 => overdubActive[lastIndex];
 
-    <<< "UNDID overdub", lastIndex + 1, "- Remaining overdubs:", overdubCount >>>;
+    "UNDID overdub " + (lastIndex + 1) + " - Remaining overdubs: " + overdubCount => statusMessage;
+    showLED(0);
 }
 
 // Erase everything and start fresh
@@ -600,7 +655,8 @@ fun void eraseAll()
 {
     if (!loopExists)
     {
-        <<< "Nothing to erase." >>>;
+        "Nothing to erase." => statusMessage;
+        showLED(0);
         return;
     }
 
@@ -660,7 +716,8 @@ fun void eraseAll()
     chout <= "\r";
     chout.flush();
     
-    <<< "ALL CLEARED!" >>>;
+    "ALL CLEARED!" => statusMessage;
+    showLED(0);
 }
 
 // ------------------------------------------------------
@@ -761,7 +818,11 @@ while (true)
     {
         if (isPlaying) 0 => isPlaying;
         else if (loopExists) spork ~ startPlayback();
-        else <<< "Record first [r]" >>>;
+        else
+        {
+            "Record first [r]" => statusMessage;
+            showLED(0);
+        }
     }
     else if (k == 'o')
     {
@@ -777,7 +838,8 @@ while (true)
     }
     else if (k == 'x' || k == 27)  // 'x' key or ESC for emergency stop
     {
-        <<< "EMERGENCY STOP - Exiting..." >>>;
+        "EMERGENCY STOP - Exiting..." => statusMessage;
+        showLED(0);
         me.exit();
     }
     // Toggle loops with number keys
@@ -793,8 +855,9 @@ while (true)
                 // Control via gain for instant mute/unmute without sync issues
                 if (mainLoopActive) mainLoop.gain(0.9);
                 else mainLoop.gain(0.0);
-                if (mainLoopActive) <<< "Main loop ON" >>>;
-                else <<< "Main loop OFF" >>>;
+                if (mainLoopActive) "Main loop ON" => statusMessage;
+                else "Main loop OFF" => statusMessage;
+                showLED(0);
             }
         }
         else
@@ -806,16 +869,27 @@ while (true)
                 // Control via gain for instant mute/unmute without sync issues
                 if (overdubActive[overdubIndex]) overdubPlayers[overdubIndex].gain(0.9);
                 else overdubPlayers[overdubIndex].gain(0.0);
-                if (overdubActive[overdubIndex]) <<< "Overdub", loopNum, "ON" >>>;
-                else <<< "Overdub", loopNum, "OFF" >>>;
+                if (overdubActive[overdubIndex]) "Overdub " + loopNum + " ON" => statusMessage;
+                else "Overdub " + loopNum + " OFF" => statusMessage;
+                showLED(0);
             }
         }
     }
     else if (k == 'q')
     {
+        // Stop playback to exit the LED animation loop
+        0 => isPlaying;
+        
+        // Wait a moment for the loop to exit
+        50::ms => now;
+        
+        // Exit static display mode - print newlines to move past the 3-line display
+        chout <= "\n\n\n\n";
+        chout.flush();
+        
         if (loopExists)
         {
-            <<< "\nSave final mix to WAV? [y/n]" >>>;
+            <<< "Save final mix to WAV? [y/n]" >>>;
             kb => now;
             kb.getchar() => int answer;
             
