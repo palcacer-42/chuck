@@ -32,11 +32,13 @@ dur loopLength;
 0 => int isPlaying;
 0 => int isOverdubbing;
 0 => int loopExists;
-5 => int beatsPerLoop;  // Configurable beat length (default 5)
-20 => int ledCount;  // Will be updated based on beatsPerLoop
+4 => int beatsPerLoop;  // Configurable beat length (default 4)
+16 => int ledCount;  // Will be updated based on beatsPerLoop
 
 // Mode selection: 0 = free mode, 1 = measure mode
 0 => int measureMode;
+// How the initial loop was actually recorded: 0 = measure, 1 = free
+0 => int freeLoop;
 
 // Multiple overdubs support
 LiSa overdubPlayers[10]; // Support up to 10 overdubs
@@ -57,6 +59,7 @@ Event loopStart;
 
 0 => int tapCount;
 time lastTap;
+time recordStart;  // Track when recording started
 
 // ------------------------------------------------------
 // LED RING: EXACT ○ and ●
@@ -218,6 +221,7 @@ fun void recordLoop()
 fun void recordMeasureLoop()
 {
     1 => isRecording;
+    0 => freeLoop; // this loop is measure-based
 
     // If playback is active, wait for the next loop to start for sync
     if (isPlaying)
@@ -273,6 +277,7 @@ fun void recordMeasureLoop()
 fun void startFreeRecording()
 {
     1 => isRecording;
+    1 => freeLoop; // this loop is free-mode based
     now => recordStart;
     
     <<< "● RECORDING... Press [r] again to stop" >>>;
@@ -297,6 +302,7 @@ fun void stopFreeRecording()
     // DON'T resize buffer - it clears the content!
     // Just set the loop length for playback
     mainLoop.loopEnd(loopLength);
+    mainLoop.loopEndRec(loopLength - 5::ms);  // 5ms crossfade for smooth loop
     
     0 => isRecording;
     1 => loopExists;
@@ -305,8 +311,6 @@ fun void stopFreeRecording()
     // Start playback
     startPlayback();
 }
-
-time recordStart;  // Track when recording started
 
 // ------------------------------------------------------
 // HID Setup and iRig BlueTurn Handler
@@ -420,7 +424,10 @@ fun void startPlayback()
     mainLoop.loopEnd(loopLength);
     mainLoop.loopEndRec(loopLength - 5::ms);  // Start crossfade 5ms before end
     mainLoop.loop(1);  // Enable looping
-    mainLoop.play(mainLoopActive);
+    // Set correct gain based on active state before starting playback
+    if (mainLoopActive) mainLoop.gain(0.9);
+    else mainLoop.gain(0.0);
+    mainLoop.play(1);
 
     // Start all existing overdubs
     for (0 => int i; i < overdubCount; i++)
@@ -430,7 +437,10 @@ fun void startPlayback()
         overdubPlayers[i].loopEnd(loopLength);
         overdubPlayers[i].loopEndRec(loopLength - 5::ms);  // 5ms crossfade
         overdubPlayers[i].loop(1);
-        overdubPlayers[i].play(overdubActive[i]);
+        // Set correct gain based on active state before starting playback
+        if (overdubActive[i]) overdubPlayers[i].gain(0.9);
+        else overdubPlayers[i].gain(0.0);
+        overdubPlayers[i].play(1);
     }
 
     loopStart.broadcast();
@@ -441,7 +451,7 @@ fun void startPlayback()
     {
         1 => int stepDone;
         
-        if (measureMode)
+        if (!freeLoop)
         {
             // MEASURE MODE: Show LED ring animation
             for (0 => int s; s < ledCount; s++)
@@ -539,8 +549,8 @@ fun void recordOverdub()
     
     0 => isOverdubbing;
     
-    // Start playback of the new overdub, synced to main loop
-    overdubPlayers[overdubCount].playPos(mainLoop.playPos());  // Sync to current position
+    // Start playback of the new overdub from the beginning (it was recorded from 0)
+    overdubPlayers[overdubCount].playPos(0::ms);  // Always start from 0 for perfect sync
     overdubPlayers[overdubCount].loopEndRec(loopLength - 5::ms);  // 5ms crossfade
     overdubPlayers[overdubCount].loop(1);
     overdubPlayers[overdubCount].play(1);
@@ -549,62 +559,108 @@ fun void recordOverdub()
     <<< "OVERDUB", overdubCount, "RECORDED! Total overdubs:", overdubCount >>>;
 }
 
-// Re-record the last overdub
-fun void redoLastOverdub()
+// Undo the last overdub (remove it completely)
+fun void undoLastOverdub()
 {
-    if (!isPlaying || !loopExists)
+    if (!loopExists)
     {
-        <<< "Play loop first [p]" >>>;
+        <<< "No loop exists." >>>;
         return;
     }
 
     if (overdubCount == 0)
     {
-        <<< "No overdub to re-record. Press 'o' to create one." >>>;
+        <<< "No overdub to undo." >>>;
         return;
     }
 
-    if (isOverdubbing)
-    {
-        <<< "Overdub already in progress..." >>>;
-        return;
-    }
+    // Decrement count FIRST so other functions see correct state immediately
+    overdubCount--;
+    
+    // Now get the index of what WAS the last overdub
+    overdubCount => int lastIndex;
 
-    overdubCount - 1 => int lastIndex;
-    
-    // Both modes: Wait for loop start for sync
-    <<< "RE-RECORDING overdub", overdubCount, "– waiting for next loop…" >>>;
-    loopStart => now;
-    
-    1 => isOverdubbing;
-    <<< "RE-RECORDING overdub", overdubCount, "(", beatsPerLoop, "beats)..." >>>;
-    
-    // Stop playback of the last overdub and clear it
+    // Stop playback immediately - this is audible
     overdubPlayers[lastIndex].play(0);
-    
-    // Re-configure LiSa buffer (this clears the old content)
-    overdubPlayers[lastIndex].duration(loopLength);
-    overdubPlayers[lastIndex].recPos(0::ms);
-    overdubPlayers[lastIndex].recRamp(0::ms);  // No ramp for precise timing
-    overdubPlayers[lastIndex].loopStart(0::ms);
-    overdubPlayers[lastIndex].loopEnd(loopLength);
-    overdubPlayers[lastIndex].record(1);
-    
-    // Record for exactly one loop length
-    loopLength => now;
-    
-    // Stop recording
     overdubPlayers[lastIndex].record(0);
-    
+    overdubPlayers[lastIndex].loop(0);
+    overdubPlayers[lastIndex].gain(0.0);  // Mute it
+
+    // Clear its buffer
+    overdubPlayers[lastIndex].duration(loopLength);
+
+    // Mark as inactive (will be skipped on next playback restart)
+    0 => overdubActive[lastIndex];
+
+    <<< "UNDID overdub", lastIndex + 1, "- Remaining overdubs:", overdubCount >>>;
+}
+
+// Erase everything and start fresh
+fun void eraseAll()
+{
+    if (!loopExists)
+    {
+        <<< "Nothing to erase." >>>;
+        return;
+    }
+
+    // Stop playback FIRST
+    0 => isPlaying;
+    0 => isRecording;
     0 => isOverdubbing;
     
-    // Start playback of the re-recorded overdub, synced to main loop
-    overdubPlayers[lastIndex].playPos(mainLoop.playPos());  // Sync to current position
-    overdubPlayers[lastIndex].loopEndRec(loopLength - 5::ms);  // 5ms crossfade
-    overdubPlayers[lastIndex].loop(1);
-    overdubPlayers[lastIndex].play(1);
+    // Give the playback loop time to exit cleanly
+    10::ms => now;
     
-    <<< "OVERDUB", overdubCount, "RE-RECORDED!" >>>;
+    // Stop and clear main loop completely
+    mainLoop.play(0);
+    mainLoop.record(0);
+    mainLoop.loop(0);
+    mainLoop.gain(0.0);  // Mute it completely during clearing
+    
+    // Clear main loop buffer by resetting duration
+    1::second => dur tempDur;
+    mainLoop.duration(tempDur);
+    mainLoop.clear();
+    
+    // Stop and clear all overdubs completely
+    for (0 => int i; i < 10; i++)
+    {
+        overdubPlayers[i].play(0);
+        overdubPlayers[i].record(0);
+        overdubPlayers[i].loop(0);
+        overdubPlayers[i].gain(0.0);  // Mute completely
+        
+        // Clear buffer
+        overdubPlayers[i].duration(tempDur);
+        overdubPlayers[i].clear();
+        
+        1 => overdubActive[i];
+    }
+    
+    // Wait a bit to ensure everything stopped
+    10::ms => now;
+    
+    // Restore gains after clearing
+    mainLoop.gain(0.9);
+    for (0 => int i; i < 10; i++)
+    {
+        overdubPlayers[i].gain(0.9);
+    }
+    
+    // Reset state
+    0 => loopExists;
+    0 => overdubCount;
+    1 => mainLoopActive;
+    0 => freeLoop;
+    
+    // Clear LED display
+    chout <= "\r";
+    for (0 => int i; i < ledCount; i++) chout <= " ";
+    chout <= "\r";
+    chout.flush();
+    
+    <<< "ALL CLEARED!" >>>;
 }
 
 // ------------------------------------------------------
@@ -637,31 +693,57 @@ KBHit kb;
 while (modeSelected)
 {
     kb => now;
-    kb.getchar() => int k;
     
-    if (k == '1')
+    while (kb.more())
     {
-        1 => measureMode;
-        0 => modeSelected;
-        <<< "\n✓ MEASURE MODE selected (", beatsPerLoop, "beats per loop)" >>>;
-        <<< "[t] Tap Tempo | [b] Set Beat Length | [r] Record loop | [p] Play/Stop | [o] Add Overdub | [u] Redo Last | [0-9] Toggle Loops | [q] Quit" >>>;
-    }
-    else if (k == '2')
-    {
-        0 => measureMode;
-        0 => modeSelected;
-        <<< "\n✓ FREE MODE selected" >>>;
-        <<< "[r] Start/Stop Recording | [p] Play/Stop | [o] Add Overdub | [u] Redo Last | [0-9] Toggle Loops | [q] Quit" >>>;
+        kb.getchar() => int k;
+        
+        if (k == '1')
+        {
+            1 => measureMode;
+            0 => modeSelected;
+            <<< "\n✓ MEASURE MODE selected (", beatsPerLoop, "beats per loop)" >>>;
+            <<< "[t] Tap Tempo | [b] Set Beat Length | [r] Record loop | [p] Play/Stop | [o] Add Overdub | [u] Undo Last | [e] Erase All | [0-9] Toggle Loops | [x/ESC] Emergency Stop | [q] Quit" >>>;
+            break;  // Exit inner loop
+        }
+        else if (k == '2')
+        {
+            0 => measureMode;
+            0 => modeSelected;
+            <<< "\n✓ FREE MODE selected" >>>;
+            <<< "[r] Start/Stop Recording | [p] Play/Stop | [o] Add Overdub | [u] Undo Last | [e] Erase All | [0-9] Toggle Loops | [x/ESC] Emergency Stop | [q] Quit" >>>;
+            break;  // Exit inner loop
+        }
+        else if (k == 'r')
+        {
+            // If user presses 'r' before choosing mode, treat it exactly like pressing '2'
+            // This ensures identical behavior to manual free mode selection
+            0 => measureMode;
+            0 => modeSelected;
+            <<< "\n✓ FREE MODE auto-selected (recording started)" >>>;
+            <<< "[r] Start/Stop Recording | [p] Play/Stop | [o] Add Overdub | [u] Undo Last | [e] Erase All | [0-9] Toggle Loops | [x/ESC] Emergency Stop | [q] Quit" >>>;
+            // Start recording after mode is properly set
+            spork ~ recordLoop();
+            break;  // Exit inner loop
+        }
     }
 }
 
+// Small delay to ensure clean transition
+1::ms => now;
+
 while (true)
 {
+    // Use a timeout so Ctrl+C can work properly
     kb => now;
-    kb.getchar() => int k;
+    
+    // Process all available keypresses
+    while (kb.more())
+    {
+        kb.getchar() => int k;
 
-    if (k == 't' && measureMode) spork ~ tapTempo();
-    else if (k == 'b' && measureMode) setBeatLength();
+    if (k == 't' && !freeLoop) spork ~ tapTempo();
+    else if (k == 'b' && !freeLoop) setBeatLength();
     else if (k == 'r')
     {
         // In measure mode, only start if not already recording
@@ -687,7 +769,16 @@ while (true)
     }
     else if (k == 'u')
     {
-        spork ~ redoLastOverdub();
+        spork ~ undoLastOverdub();
+    }
+    else if (k == 'e')
+    {
+        eraseAll();
+    }
+    else if (k == 'x' || k == 27)  // 'x' key or ESC for emergency stop
+    {
+        <<< "EMERGENCY STOP - Exiting..." >>>;
+        me.exit();
     }
     // Toggle loops with number keys
     else if (k >= '0' && k <= '9')
@@ -792,6 +883,7 @@ while (true)
         <<< "Loop station stopped. Bye!" >>>;
         me.exit();
     }
+    }  // End of while (kb.more())
 }
 
 
