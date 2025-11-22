@@ -15,11 +15,24 @@ HidMsg blueTurnMsg;
 adc => Gain input => blackhole;
 input.gain(0.8);
 
-// Main loop using LiSa buffer
-LiSa mainLoop => dac;
+// Main loop using LiSa buffer with effects chain and stereo panning
+LiSa mainLoop => Gain mainFX => NRev mainRev => Delay mainDel => Gain mainDist => Pan2 mainPan => dac;
 adc => mainLoop;
 mainLoop.gain(0.9);
 mainLoop.maxVoices(1);
+mainPan.pan(0.0);  // Center by default
+
+// Main loop effects settings
+mainFX.gain(1.0);  // Volume control
+mainRev.mix(0.0);  // Reverb off by default
+mainDel.max(1::second);
+mainDel.delay(250::ms);
+mainDel.gain(0.0);  // Delay off by default
+mainDist.gain(1.0);  // Distortion amount (>1.0 = distortion)
+
+// Main loop playback settings
+1.0 => float mainRate;  // Speed: 0.5=half, 1.0=normal, 2.0=double
+1 => int mainDirection;  // 1=forward, -1=reverse
 
 Gain clickGain => dac;
 clickGain.gain(0.5);
@@ -42,18 +55,52 @@ dur loopLength;
 
 // Multiple overdubs support
 LiSa overdubPlayers[10]; // Support up to 10 overdubs
+Gain overdubFX[10];  // Volume control for each overdub
+NRev overdubRevs[10];  // Reverb for each overdub
+Delay overdubDels[10];  // Delay for each overdub
+Gain overdubDists[10];  // Distortion for each overdub
+Pan2 overdubPans[10]; // Pan control for each overdub
 0 => int overdubCount;
 int overdubActive[10]; // Track which overdubs are active
 1 => int mainLoopActive; // Track if main loop is active
+float panPositions[11]; // Pan positions: 0=main, 1-10=overdubs (-1.0 to 1.0)
 
-// Initialize overdub players with LiSa buffers
+// Overdub effects and playback settings
+float overdubVolumes[10];  // Volume: 0.0 to 2.0
+float overdubRates[10];  // Speed: 0.5 to 2.0
+int overdubDirections[10];  // 1=forward, -1=reverse
+float overdubRevMix[10];  // Reverb mix: 0.0 to 1.0
+float overdubDelMix[10];  // Delay mix: 0.0 to 1.0
+float overdubDistAmt[10];  // Distortion: 1.0 to 3.0
+
+// Initialize overdub players with LiSa buffers, effects chain, and panning
 for (0 => int i; i < 10; i++)
 {
-    adc => overdubPlayers[i] => dac;
+    adc => overdubPlayers[i] => overdubFX[i] => overdubRevs[i] => overdubDels[i] => overdubDists[i] => overdubPans[i] => dac;
     overdubPlayers[i].gain(0.9);
     overdubPlayers[i].maxVoices(1);
+    overdubPans[i].pan(0.0);  // Center by default
     1 => overdubActive[i]; // Start active by default
+    0.0 => panPositions[i + 1]; // Initialize pan positions (offset by 1)
+    
+    // Initialize effects
+    1.0 => overdubVolumes[i];
+    overdubFX[i].gain(1.0);
+    overdubRevs[i].mix(0.0);
+    overdubDels[i].max(1::second);
+    overdubDels[i].delay(250::ms);
+    overdubDels[i].gain(0.0);
+    overdubDists[i].gain(1.0);
+    
+    // Initialize playback settings
+    1.0 => overdubRates[i];
+    1 => overdubDirections[i];
+    0.0 => overdubRevMix[i];
+    0.0 => overdubDelMix[i];
+    1.0 => overdubDistAmt[i];
 }
+0.0 => panPositions[0]; // Main loop pan position
+1.0 => float mainVolume;  // Main loop volume
 
 Event loopStart;
 
@@ -68,6 +115,49 @@ time recordStart;  // Track when recording started
 // LED RING: EXACT ○ and ●
 // ------------------------------------------------------
 
+// Convert pan position to visual symbol
+fun string getPanSymbol(float pan)
+{
+    if (pan < -0.6) return "L";
+    else if (pan < -0.2) return "l";
+    else if (pan > 0.6) return "R";
+    else if (pan > 0.2) return "r";
+    else return "c"; // center
+}
+
+// Get effects indicator symbols for a track
+fun string getEffectsSymbol(int loopNum)
+{
+    "" => string fx;
+    
+    if (loopNum == 0) {
+        // Main loop
+        if (mainDirection < 0) fx + "↓" => fx;  // Reverse
+        if (mainRate != 1.0) {
+            if (mainRate > 1.0) fx + "↑" => fx;  // Fast
+            else fx + "↓" => fx;  // Slow (reuse symbol)
+        }
+        if (mainRev.mix() > 0.0) fx + "R" => fx;  // Reverb
+        if (mainDel.gain() > 0.0) fx + "D" => fx;  // Delay
+        if (mainDist.gain() > 1.5) fx + "X" => fx;  // Distortion
+    } else {
+        // Overdub
+        loopNum - 1 => int idx;
+        if (idx < overdubCount) {
+            if (overdubDirections[idx] < 0) fx + "↓" => fx;
+            if (overdubRates[idx] != 1.0) {
+                if (overdubRates[idx] > 1.0) fx + "↑" => fx;
+                else fx + "↓" => fx;
+            }
+            if (overdubRevMix[idx] > 0.0) fx + "R" => fx;
+            if (overdubDelMix[idx] > 0.0) fx + "D" => fx;
+            if (overdubDistAmt[idx] > 1.5) fx + "X" => fx;
+        }
+    }
+    
+    return fx;
+}
+
 // --- show LED ring in console ---
 fun void showLED(int pos)
 {
@@ -81,16 +171,19 @@ fun void showLED(int pos)
         if ((i + 1) % 4 == 0 && i < ledCount - 1) leds + " " => leds;
     }
     
-    // Build track status line
+    // Build track status line with pan positions and effects
     "" => string status;
-    if (mainLoopActive) status + "[0:●]" => status;
-    else status + "[0:○]" => status;
+    // Main loop with pan and effects indicators
+    if (mainLoopActive) status + "[0:●" => status;
+    else status + "[0:○" => status;
+    status + getPanSymbol(panPositions[0]) + getEffectsSymbol(0) + "]" => status;
     
     for (0 => int i; i < overdubCount; i++)
     {
         status + " " => status;
-        if (overdubActive[i]) status + "[" + (i+1) + ":●]" => status;
-        else status + "[" + (i+1) + ":○]" => status;
+        if (overdubActive[i]) status + "[" + (i+1) + ":●" => status;
+        else status + "[" + (i+1) + ":○" => status;
+        status + getPanSymbol(panPositions[i+1]) + getEffectsSymbol(i+1) + "]" => status;
     }
     
     // Pad all lines to clear previous content
@@ -459,18 +552,19 @@ fun void startPlayback()
     if (!loopExists) return;
     1 => isPlaying;
 
-    // Start main loop playback
+    // Start main loop playback with current settings
     mainLoop.playPos(0::ms);
     mainLoop.loopStart(0::ms);
     mainLoop.loopEnd(loopLength);
     mainLoop.loopEndRec(loopLength - 5::ms);  // Start crossfade 5ms before end
     mainLoop.loop(1);  // Enable looping
+    mainLoop.rate(mainRate * mainDirection);  // Apply speed and direction
     // Set correct gain based on active state before starting playback
     if (mainLoopActive) mainLoop.gain(0.9);
     else mainLoop.gain(0.0);
     mainLoop.play(1);
 
-    // Start all existing overdubs
+    // Start all existing overdubs with current settings
     for (0 => int i; i < overdubCount; i++)
     {
         overdubPlayers[i].playPos(0::ms);
@@ -478,6 +572,7 @@ fun void startPlayback()
         overdubPlayers[i].loopEnd(loopLength);
         overdubPlayers[i].loopEndRec(loopLength - 5::ms);  // 5ms crossfade
         overdubPlayers[i].loop(1);
+        overdubPlayers[i].rate(overdubRates[i] * overdubDirections[i]);  // Apply speed and direction
         // Set correct gain based on active state before starting playback
         if (overdubActive[i]) overdubPlayers[i].gain(0.9);
         else overdubPlayers[i].gain(0.0);
@@ -650,6 +745,266 @@ fun void undoLastOverdub()
     showLED(0);
 }
 
+// Volume control for specific loop
+fun void adjustVolume(int loopNum, float delta)
+{
+    if (loopNum == 0)
+    {
+        if (!loopExists) return;
+        mainVolume + delta => mainVolume;
+        if (mainVolume > 2.0) 2.0 => mainVolume;
+        if (mainVolume < 0.0) 0.0 => mainVolume;
+        mainFX.gain(mainVolume);
+        "Main volume: " + (mainVolume * 100.0) $ int + "%" => statusMessage;
+        showLED(0);
+    }
+    else
+    {
+        loopNum - 1 => int idx;
+        if (idx >= overdubCount) return;
+        overdubVolumes[idx] + delta => overdubVolumes[idx];
+        if (overdubVolumes[idx] > 2.0) 2.0 => overdubVolumes[idx];
+        if (overdubVolumes[idx] < 0.0) 0.0 => overdubVolumes[idx];
+        overdubFX[idx].gain(overdubVolumes[idx]);
+        "Overdub " + loopNum + " volume: " + (overdubVolumes[idx] * 100.0) $ int + "%" => statusMessage;
+        showLED(0);
+    }
+}
+
+// Toggle reverse playback
+fun void toggleReverse(int loopNum)
+{
+    if (loopNum == 0)
+    {
+        if (!loopExists) return;
+        -mainDirection => mainDirection;
+        mainLoop.rate(mainRate * mainDirection);
+        if (mainDirection < 0) "Main loop: REVERSE" => statusMessage;
+        else "Main loop: FORWARD" => statusMessage;
+        showLED(0);
+    }
+    else
+    {
+        loopNum - 1 => int idx;
+        if (idx >= overdubCount) return;
+        -overdubDirections[idx] => overdubDirections[idx];
+        overdubPlayers[idx].rate(overdubRates[idx] * overdubDirections[idx]);
+        if (overdubDirections[idx] < 0) "Overdub " + loopNum + ": REVERSE" => statusMessage;
+        else "Overdub " + loopNum + ": FORWARD" => statusMessage;
+        showLED(0);
+    }
+}
+
+// Adjust playback speed
+fun void adjustSpeed(int loopNum, float multiplier)
+{
+    if (loopNum == 0)
+    {
+        if (!loopExists) return;
+        mainRate * multiplier => mainRate;
+        if (mainRate > 2.0) 2.0 => mainRate;
+        if (mainRate < 0.5) 0.5 => mainRate;
+        mainLoop.rate(mainRate * mainDirection);
+        "Main speed: " + (mainRate * 100.0) $ int + "%" => statusMessage;
+        showLED(0);
+    }
+    else
+    {
+        loopNum - 1 => int idx;
+        if (idx >= overdubCount) return;
+        overdubRates[idx] * multiplier => overdubRates[idx];
+        if (overdubRates[idx] > 2.0) 2.0 => overdubRates[idx];
+        if (overdubRates[idx] < 0.5) 0.5 => overdubRates[idx];
+        overdubPlayers[idx].rate(overdubRates[idx] * overdubDirections[idx]);
+        "Overdub " + loopNum + " speed: " + (overdubRates[idx] * 100.0) $ int + "%" => statusMessage;
+        showLED(0);
+    }
+}
+
+// Reset speed to normal
+fun void resetSpeed(int loopNum)
+{
+    if (loopNum == 0)
+    {
+        if (!loopExists) return;
+        1.0 => mainRate;
+        mainLoop.rate(mainRate * mainDirection);
+        "Main speed: NORMAL" => statusMessage;
+        showLED(0);
+    }
+    else
+    {
+        loopNum - 1 => int idx;
+        if (idx >= overdubCount) return;
+        1.0 => overdubRates[idx];
+        overdubPlayers[idx].rate(overdubRates[idx] * overdubDirections[idx]);
+        "Overdub " + loopNum + " speed: NORMAL" => statusMessage;
+        showLED(0);
+    }
+}
+
+// Toggle reverb effect
+fun void toggleReverb(int loopNum)
+{
+    if (loopNum == 0)
+    {
+        if (!loopExists) return;
+        if (mainRev.mix() > 0.0) mainRev.mix(0.0);
+        else mainRev.mix(0.3);
+        "Main reverb: " + (mainRev.mix() > 0.0 ? "ON" : "OFF") => statusMessage;
+        showLED(0);
+    }
+    else
+    {
+        loopNum - 1 => int idx;
+        if (idx >= overdubCount) return;
+        if (overdubRevMix[idx] > 0.0) {
+            0.0 => overdubRevMix[idx];
+            overdubRevs[idx].mix(0.0);
+        }
+        else {
+            0.3 => overdubRevMix[idx];
+            overdubRevs[idx].mix(0.3);
+        }
+        "Overdub " + loopNum + " reverb: " + (overdubRevMix[idx] > 0.0 ? "ON" : "OFF") => statusMessage;
+        showLED(0);
+    }
+}
+
+// Toggle delay effect
+fun void toggleDelay(int loopNum)
+{
+    if (loopNum == 0)
+    {
+        if (!loopExists) return;
+        if (mainDel.gain() > 0.0) mainDel.gain(0.0);
+        else mainDel.gain(0.5);
+        "Main delay: " + (mainDel.gain() > 0.0 ? "ON" : "OFF") => statusMessage;
+        showLED(0);
+    }
+    else
+    {
+        loopNum - 1 => int idx;
+        if (idx >= overdubCount) return;
+        if (overdubDelMix[idx] > 0.0) {
+            0.0 => overdubDelMix[idx];
+            overdubDels[idx].gain(0.0);
+        }
+        else {
+            0.5 => overdubDelMix[idx];
+            overdubDels[idx].gain(0.5);
+        }
+        "Overdub " + loopNum + " delay: " + (overdubDelMix[idx] > 0.0 ? "ON" : "OFF") => statusMessage;
+        showLED(0);
+    }
+}
+
+// Toggle distortion effect
+fun void toggleDistortion(int loopNum)
+{
+    if (loopNum == 0)
+    {
+        if (!loopExists) return;
+        if (mainDist.gain() > 1.5) mainDist.gain(1.0);
+        else mainDist.gain(2.5);
+        "Main distortion: " + (mainDist.gain() > 1.5 ? "ON" : "OFF") => statusMessage;
+        showLED(0);
+    }
+    else
+    {
+        loopNum - 1 => int idx;
+        if (idx >= overdubCount) return;
+        if (overdubDistAmt[idx] > 1.5) {
+            1.0 => overdubDistAmt[idx];
+            overdubDists[idx].gain(1.0);
+        }
+        else {
+            2.5 => overdubDistAmt[idx];
+            overdubDists[idx].gain(2.5);
+        }
+        "Overdub " + loopNum + " distortion: " + (overdubDistAmt[idx] > 1.5 ? "ON" : "OFF") => statusMessage;
+        showLED(0);
+    }
+}
+
+// Pan a specific loop left or right
+fun void panLoop(int loopNum, float direction)
+{
+    if (loopNum == 0)
+    {
+        // Pan main loop
+        if (!loopExists)
+        {
+            "No loop exists." => statusMessage;
+            showLED(0);
+            return;
+        }
+        
+        panPositions[0] + (direction * 0.2) => panPositions[0];
+        // Clamp to -1.0 to 1.0
+        if (panPositions[0] > 1.0) 1.0 => panPositions[0];
+        if (panPositions[0] < -1.0) -1.0 => panPositions[0];
+        
+        mainPan.pan(panPositions[0]);
+        "Main loop pan: " + getPanSymbol(panPositions[0]) + " (" + panPositions[0] + ")" => statusMessage;
+        showLED(0);
+    }
+    else
+    {
+        // Pan overdub
+        loopNum - 1 => int overdubIndex;
+        if (overdubIndex >= overdubCount)
+        {
+            "Overdub " + loopNum + " doesn't exist." => statusMessage;
+            showLED(0);
+            return;
+        }
+        
+        panPositions[loopNum] + (direction * 0.2) => panPositions[loopNum];
+        // Clamp to -1.0 to 1.0
+        if (panPositions[loopNum] > 1.0) 1.0 => panPositions[loopNum];
+        if (panPositions[loopNum] < -1.0) -1.0 => panPositions[loopNum];
+        
+        overdubPans[overdubIndex].pan(panPositions[loopNum]);
+        "Overdub " + loopNum + " pan: " + getPanSymbol(panPositions[loopNum]) + " (" + panPositions[loopNum] + ")" => statusMessage;
+        showLED(0);
+    }
+}
+
+// Reset pan to center for a specific loop
+fun void resetPan(int loopNum)
+{
+    if (loopNum == 0)
+    {
+        if (!loopExists)
+        {
+            "No loop exists." => statusMessage;
+            showLED(0);
+            return;
+        }
+        
+        0.0 => panPositions[0];
+        mainPan.pan(0.0);
+        "Main loop pan reset to center" => statusMessage;
+        showLED(0);
+    }
+    else
+    {
+        loopNum - 1 => int overdubIndex;
+        if (overdubIndex >= overdubCount)
+        {
+            "Overdub " + loopNum + " doesn't exist." => statusMessage;
+            showLED(0);
+            return;
+        }
+        
+        0.0 => panPositions[loopNum];
+        overdubPans[overdubIndex].pan(0.0);
+        "Overdub " + loopNum + " pan reset to center" => statusMessage;
+        showLED(0);
+    }
+}
+
 // Erase everything and start fresh
 fun void eraseAll()
 {
@@ -710,6 +1065,37 @@ fun void eraseAll()
     1 => mainLoopActive;
     0 => freeLoop;
     
+    // Reset pan positions
+    for (0 => int i; i < 11; i++)
+    {
+        0.0 => panPositions[i];
+    }
+    mainPan.pan(0.0);
+    
+    // Reset all effects and playback settings
+    1.0 => mainVolume;
+    1.0 => mainRate;
+    1 => mainDirection;
+    mainFX.gain(1.0);
+    mainRev.mix(0.0);
+    mainDel.gain(0.0);
+    mainDist.gain(1.0);
+    
+    for (0 => int i; i < 10; i++)
+    {
+        overdubPans[i].pan(0.0);
+        1.0 => overdubVolumes[i];
+        1.0 => overdubRates[i];
+        1 => overdubDirections[i];
+        0.0 => overdubRevMix[i];
+        0.0 => overdubDelMix[i];
+        1.0 => overdubDistAmt[i];
+        overdubFX[i].gain(1.0);
+        overdubRevs[i].mix(0.0);
+        overdubDels[i].gain(0.0);
+        overdubDists[i].gain(1.0);
+    }
+    
     // Clear LED display
     chout <= "\r";
     for (0 => int i; i < ledCount; i++) chout <= " ";
@@ -760,7 +1146,8 @@ while (modeSelected)
             1 => measureMode;
             0 => modeSelected;
             <<< "\n✓ MEASURE MODE selected (", beatsPerLoop, "beats per loop)" >>>;
-            <<< "[t] Tap Tempo | [b] Set Beat Length | [r] Record loop | [p] Play/Stop | [o] Add Overdub | [u] Undo Last | [e] Erase All | [0-9] Toggle Loops | [x/ESC] Emergency Stop | [q] Quit" >>>;
+            <<< "[t] Tap | [b] Beats | [r] Rec | [p] Play | [o] Overdub | [u] Undo | [e] Erase | [0-9] Select Track" >>>;
+            <<< "Pan: [</>] | Vol: [-/+] | Speed: [s/S] Reset:[n] | Reverse:[v] | Effects: [R]ev [D]el [X]tor" >>>;
             break;  // Exit inner loop
         }
         else if (k == '2')
@@ -768,7 +1155,8 @@ while (modeSelected)
             0 => measureMode;
             0 => modeSelected;
             <<< "\n✓ FREE MODE selected" >>>;
-            <<< "[r] Start/Stop Recording | [p] Play/Stop | [o] Add Overdub | [u] Undo Last | [e] Erase All | [0-9] Toggle Loops | [x/ESC] Emergency Stop | [q] Quit" >>>;
+            <<< "[r] Rec | [p] Play | [o] Overdub | [u] Undo | [e] Erase | [0-9] Select Track" >>>;
+            <<< "Pan: [</>] | Vol: [-/+] | Speed: [s/S] Reset:[n] | Reverse:[v] | Effects: [R]ev [D]el [X]tor" >>>;
             break;  // Exit inner loop
         }
         else if (k == 'r')
@@ -778,7 +1166,8 @@ while (modeSelected)
             0 => measureMode;
             0 => modeSelected;
             <<< "\n✓ FREE MODE auto-selected (recording started)" >>>;
-            <<< "[r] Start/Stop Recording | [p] Play/Stop | [o] Add Overdub | [u] Undo Last | [e] Erase All | [0-9] Toggle Loops | [x/ESC] Emergency Stop | [q] Quit" >>>;
+            <<< "[r] Rec | [p] Play | [o] Overdub | [u] Undo | [e] Erase | [0-9] Select Track" >>>;
+            <<< "Pan: [</>] | Vol: [-/+] | Speed: [s/S] Reset:[n] | Reverse:[v] | Effects: [R]ev [D]el [X]tor" >>>;
             // Start recording after mode is properly set
             spork ~ recordLoop();
             break;  // Exit inner loop
@@ -788,6 +1177,9 @@ while (modeSelected)
 
 // Small delay to ensure clean transition
 1::ms => now;
+
+// Track selection for pan control (0 = main, 1-10 = overdubs)
+0 => int selectedTrack;
 
 while (true)
 {
@@ -859,6 +1251,8 @@ while (true)
                 else "Main loop OFF" => statusMessage;
                 showLED(0);
             }
+            // Select track for pan control
+            loopNum => selectedTrack;
         }
         else
         {
@@ -873,7 +1267,64 @@ while (true)
                 else "Overdub " + loopNum + " OFF" => statusMessage;
                 showLED(0);
             }
+            // Select track for pan control
+            loopNum => selectedTrack;
         }
+    }
+    // Pan selected track left
+    else if (k == ',' || k == '<')
+    {
+        panLoop(selectedTrack, -1.0);
+    }
+    // Pan selected track right
+    else if (k == '.' || k == '>')
+    {
+        panLoop(selectedTrack, 1.0);
+    }
+    // Reset selected track pan to center
+    else if (k == 'c')
+    {
+        resetPan(selectedTrack);
+    }
+    // Volume control
+    else if (k == '-' || k == '_')
+    {
+        adjustVolume(selectedTrack, -0.1);
+    }
+    else if (k == '+' || k == '=')
+    {
+        adjustVolume(selectedTrack, 0.1);
+    }
+    // Speed control
+    else if (k == 's')
+    {
+        adjustSpeed(selectedTrack, 0.9);  // Slow down
+    }
+    else if (k == 'S')
+    {
+        adjustSpeed(selectedTrack, 1.1);  // Speed up
+    }
+    else if (k == 'n')
+    {
+        resetSpeed(selectedTrack);  // Reset to normal speed
+    }
+    // Reverse playback
+    else if (k == 'v')
+    {
+        toggleReverse(selectedTrack);
+    }
+    // Effects toggles
+    else if (k == 'R')
+    {
+        toggleReverb(selectedTrack);
+    }
+    else if (k == 'D')
+    {
+        toggleDelay(selectedTrack);
+    }
+    else if (k == 'X')
+    {
+        toggleDistortion(selectedTrack);
     }
     else if (k == 'q')
     {
@@ -909,11 +1360,11 @@ while (true)
                 WvOut wout => blackhole;
                 wout.wavFilename(filename);
                 
-                // Connect main loop and all overdubs to output
-                mainLoop => wout;
+                // Connect main loop and all overdubs to output with pan
+                mainPan => wout;
                 for (0 => int i; i < overdubCount; i++)
                 {
-                    overdubPlayers[i] => wout;
+                    overdubPans[i] => wout;
                 }
                 
                 // If not playing, start everything from the beginning
