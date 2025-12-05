@@ -24,6 +24,7 @@ MidiOut midiOut;
 // APC Mini button notes (8x8 grid, row 0=top, row 7=bottom)
 // Each array has 8 elements, one per column
 [8, 9, 10, 11, 12, 13, 14, 15] @=> int row1Buttons[];      // Row 1: Track on/off (mute)
+[16, 17, 18, 19, 20, 21, 22, 23] @=> int row2Buttons[];    // Row 2: Octave down effect
 [40, 41, 42, 43, 44, 45, 46, 47] @=> int row5Buttons[];    // Row 5: Speed control
 [32, 33, 34, 35, 36, 37, 38, 39] @=> int row4Buttons[];    // Row 4: Reverse toggle
 [48, 49, 50, 51, 52, 53, 54, 55] @=> int panButtons[];     // Row 6: Pan mode
@@ -72,14 +73,6 @@ fun void ledFlasher()
 adc => Gain input => blackhole;
 input.gain(0.8);
 
-// Main loop using LiSa buffer with volume control and pan
-LiSa mainLoop => Gain masterGain => Pan2 masterPan => dac;
-adc => mainLoop;
-mainLoop.gain(0.9);
-masterGain.gain(0.9);  // Master volume control
-masterPan.pan(0.0);    // Center pan (-1.0 = left, 0.0 = center, 1.0 = right)
-mainLoop.maxVoices(1);
-
 Gain clickGain => dac;
 clickGain.gain(0.5);
 
@@ -102,18 +95,48 @@ dur loopLength;
 // Multiple overdubs support
 LiSa overdubPlayers[10]; // Support up to 10 overdubs
 Pan2 overdubPan[10];     // Pan control for each overdub
+Gain overdubDry[10];     // Dry signal gain for each overdub
+PitShift overdubOctave[10]; // Octave down effect for each overdub
+Gain overdubOctaveMix[10]; // Mix control for octave effect
 0 => int overdubCount;
 int overdubActive[10]; // Track which overdubs are active
+int overdubOctaveActive[10]; // Track octave effect state
 1 => int mainLoopActive; // Track if main loop is active
+0 => int mainOctaveActive; // Main loop octave state
 
-// Initialize overdub players with LiSa buffers and pan
+// Main loop with octave effect
+LiSa mainLoop => Gain mainDry => Gain masterGain => Pan2 masterPan => dac;
+adc => mainLoop;
+mainLoop.gain(0.9);
+masterGain.gain(0.9);
+masterPan.pan(0.0);
+mainLoop.maxVoices(1);
+
+// Main loop octave path
+mainLoop => PitShift mainOctave => Gain mainOctaveMix => masterGain;
+0.5 => mainOctave.shift;  // One octave down
+1.0 => mainOctave.mix;
+0.0 => mainOctaveMix.gain;  // Off by default
+1.0 => mainDry.gain;
+
+// Initialize overdub players with LiSa buffers, pan, and octave effect
 for (0 => int i; i < 10; i++)
 {
-    adc => overdubPlayers[i] => overdubPan[i] => dac;
+    adc => overdubPlayers[i] => overdubDry[i] => overdubPan[i] => dac;
+    overdubPlayers[i] => overdubOctave[i] => overdubOctaveMix[i] => overdubPan[i];
+    
     overdubPlayers[i].gain(0.9);
     overdubPlayers[i].maxVoices(1);
     overdubPan[i].pan(0.0);  // Center pan initially
+    
+    // Octave effect setup
+    0.5 => overdubOctave[i].shift;  // One octave down
+    1.0 => overdubOctave[i].mix;
+    0.0 => overdubOctaveMix[i].gain;  // Off by default
+    1.0 => overdubDry[i].gain;  // Dry signal always on
+    
     1 => overdubActive[i]; // Start active by default
+    0 => overdubOctaveActive[i]; // Octave off by default
 }
 
 Event loopStart;
@@ -147,6 +170,156 @@ for (0 => int i; i < 10; i++)
 }
 
 0 => int selectedTrack;      // Currently selected track (0 = main, 1-10 = overdubs)
+
+// ------------------------------------------------------
+// Session Management
+// ------------------------------------------------------
+
+// Save session to file
+fun void saveSession(string filename)
+{
+    // Create session file
+    FileIO fout;
+    fout.open(filename, FileIO.WRITE);
+    
+    if (!fout.good())
+    {
+        <<< "ERROR: Could not create session file:", filename >>>;
+        return;
+    }
+    
+    // Write session header
+    fout <= "# ChucK Loopstation Session File\n";
+    fout <= "# Generated: " <= Std.getenv("USER") <= "\n";
+    fout <= "# Format: key=value pairs\n\n";
+    
+    // Write loop settings
+    fout <= "loopExists=" <= loopExists <= "\n";
+    fout <= "measureMode=" <= measureMode <= "\n";
+    fout <= "freeLoop=" <= freeLoop <= "\n";
+    fout <= "beatsPerLoop=" <= beatsPerLoop <= "\n";
+    fout <= "bpm=" <= bpm <= "\n";
+    fout <= "loopLength=" <= (loopLength / 1::ms) <= "\n";  // Save in ms
+    
+    // Write main loop parameters
+    fout <= "mainSpeed=" <= mainSpeed <= "\n";
+    fout <= "mainReverse=" <= mainReverse <= "\n";
+    fout <= "mainVolume=" <= mainVolume <= "\n";
+    fout <= "mainPan=" <= mainPan <= "\n";
+    fout <= "mainTrackVolume=" <= mainTrackVolume <= "\n";
+    fout <= "mainLoopActive=" <= mainLoopActive <= "\n";
+    fout <= "mainOctaveActive=" <= mainOctaveActive <= "\n";
+    
+    // Write overdub count
+    fout <= "overdubCount=" <= overdubCount <= "\n";
+    
+    // Write overdub parameters (only for existing overdubs)
+    for (0 => int i; i < overdubCount; i++)
+    {
+        fout <= "overdub" <= i <= "_volume=" <= overdubVolumes[i] <= "\n";
+        fout <= "overdub" <= i <= "_speed=" <= overdubSpeeds[i] <= "\n";
+        fout <= "overdub" <= i <= "_reverse=" <= overdubReverse[i] <= "\n";
+        fout <= "overdub" <= i <= "_active=" <= overdubActive[i] <= "\n";
+        fout <= "overdub" <= i <= "_octaveActive=" <= overdubOctaveActive[i] <= "\n";
+        fout <= "overdub" <= i <= "_pan=" <= trackPan[i+1] <= "\n";
+    }
+    
+    fout.close();
+    <<< "✓ Session saved to", filename >>>;
+}
+
+// Load session from file
+fun int loadSession(string filename)
+{
+    FileIO fin;
+    fin.open(filename, FileIO.READ);
+    
+    if (!fin.good())
+    {
+        <<< "ERROR: Could not open session file:", filename >>>;
+        return 0;
+    }
+    
+    <<< "Loading session from", filename >>>;
+    
+    // Read file line by line
+    while (fin.more())
+    {
+        fin.readLine() => string line;
+        
+        // Skip comments and empty lines
+        if (line.find("#") == 0 || line.length() == 0) continue;
+        
+        // Parse key=value
+        line.find("=") => int eqPos;
+        if (eqPos < 0) continue;
+        
+        line.substring(0, eqPos) => string key;
+        line.substring(eqPos + 1) => string value;
+        
+        // Parse and apply settings
+        if (key == "loopExists") Std.atoi(value) => loopExists;
+        else if (key == "measureMode") Std.atoi(value) => measureMode;
+        else if (key == "freeLoop") Std.atoi(value) => freeLoop;
+        else if (key == "beatsPerLoop") Std.atoi(value) => beatsPerLoop;
+        else if (key == "bpm") Std.atof(value) => bpm;
+        else if (key == "loopLength") Std.atof(value) * 1::ms => loopLength;
+        else if (key == "mainSpeed") Std.atof(value) => mainSpeed;
+        else if (key == "mainReverse") Std.atoi(value) => mainReverse;
+        else if (key == "mainVolume") Std.atof(value) => mainVolume;
+        else if (key == "mainPan") Std.atof(value) => mainPan;
+        else if (key == "mainTrackVolume") Std.atof(value) => mainTrackVolume;
+        else if (key == "mainLoopActive") Std.atoi(value) => mainLoopActive;
+        else if (key == "mainOctaveActive") Std.atoi(value) => mainOctaveActive;
+        else if (key == "overdubCount") Std.atoi(value) => overdubCount;
+        else if (key.find("overdub") == 0)
+        {
+            // Parse overdub parameters
+            key.find("_") => int underPos;
+            if (underPos < 0) continue;
+            
+            key.substring(7, underPos - 7) => string idxStr;
+            key.substring(underPos + 1) => string param;
+            Std.atoi(idxStr) => int idx;
+            
+            if (idx >= 0 && idx < 10)
+            {
+                if (param == "volume") Std.atof(value) => overdubVolumes[idx];
+                else if (param == "speed") Std.atof(value) => overdubSpeeds[idx];
+                else if (param == "reverse") Std.atoi(value) => overdubReverse[idx];
+                else if (param == "active") Std.atoi(value) => overdubActive[idx];
+                else if (param == "octaveActive") Std.atoi(value) => overdubOctaveActive[idx];
+                else if (param == "pan") Std.atof(value) => trackPan[idx+1];
+            }
+        }
+    }
+    
+    fin.close();
+    
+    // Apply loaded settings
+    masterGain.gain(mainVolume);
+    masterPan.pan(mainPan);
+    
+    if (mainOctaveActive) 0.5 => mainOctaveMix.gain;
+    else 0.0 => mainOctaveMix.gain;
+    
+    // Apply overdub settings
+    for (0 => int i; i < overdubCount; i++)
+    {
+        overdubPan[i].pan(trackPan[i+1]);
+        if (overdubOctaveActive[i]) 0.5 => overdubOctaveMix[i].gain;
+        else 0.0 => overdubOctaveMix[i].gain;
+    }
+    
+    // Update beat duration
+    (60.0 / bpm) :: second => beatDur;
+    beatsPerLoop * 4 => ledCount;
+    
+    <<< "✓ Session loaded successfully" >>>;
+    <<< "  Mode:", (measureMode ? "Measure" : "Free"), "| Overdubs:", overdubCount >>>;
+    
+    return 1;
+}
 
 // ------------------------------------------------------
 // LED RING: EXACT ○ and ●
@@ -186,13 +359,17 @@ fun void showLED(int pos)
     "" => string fx;
     if (mainSpeed != 1.0) {
         if (fx != "") fx + "," => fx;
-        fx + "spd:" => fx;
+        fx + "s:" => fx;
         Math.floor(mainSpeed * 10 + 0.5) / 10.0 => float roundedSpeed;
         fx + roundedSpeed => fx;
     }
     if (mainReverse == -1) {
         if (fx != "") fx + "," => fx;
-        fx + "rev" => fx;
+        fx + "r" => fx;
+    }
+    if (mainOctaveActive) {
+        if (fx != "") fx + "," => fx;
+        fx + "oct" => fx;
     }
     if (fx != "") tracks + " " + fx => tracks;
     tracks + "]" => tracks;
@@ -206,6 +383,24 @@ fun void showLED(int pos)
         tracks + "[" + (i+1) + ":" => tracks;
         if (overdubActive[i]) tracks + "●" => tracks;
         else tracks + "○" => tracks;
+        
+        // Show effects for this overdub
+        "" => string ofx;
+        if (overdubSpeeds[i] != 1.0) {
+            if (ofx != "") ofx + "," => ofx;
+            ofx + "s:" => ofx;
+            Math.floor(overdubSpeeds[i] * 10 + 0.5) / 10.0 => float rs;
+            ofx + rs => ofx;
+        }
+        if (overdubReverse[i] == -1) {
+            if (ofx != "") ofx + "," => ofx;
+            ofx + "r" => ofx;
+        }
+        if (overdubOctaveActive[i]) {
+            if (ofx != "") ofx + "," => ofx;
+            ofx + "oct" => ofx;
+        }
+        if (ofx != "") tracks + " " + ofx => tracks;
         tracks + "]" => tracks;
         if (selectedTrack == i + 1) tracks + "\033[0m" => tracks;  // Reset bold
     }
@@ -637,7 +832,18 @@ fun void updateTrackLEDs(int trackIndex)
                 setButtonLED(row4Buttons[0], trackColor);  // Solid when forward
             }
             
-            // Track on/off button (row 3) - lit when track is active
+            // Octave button (row 2) - flash when octave is active
+            if (mainOctaveActive)
+            {
+                if (ledFlashState) setButtonLED(row2Buttons[0], trackColor);
+                else setButtonLED(row2Buttons[0], LED_OFF);
+            }
+            else
+            {
+                setButtonLED(row2Buttons[0], trackColor);  // Solid when off
+            }
+            
+            // Track on/off button (row 1) - lit when track is active
             if (mainLoopActive)
             {
                 setButtonLED(row1Buttons[0], trackColor);  // Solid when on
@@ -655,6 +861,7 @@ fun void updateTrackLEDs(int trackIndex)
             setButtonLED(row5Buttons[0], LED_OFF);
             setButtonLED(row4Buttons[0], LED_OFF);
             setButtonLED(row1Buttons[0], LED_OFF);
+            setButtonLED(row2Buttons[0], LED_OFF);
         }
     }
     else if (trackIndex - 1 < overdubCount)
@@ -698,7 +905,7 @@ fun void updateTrackLEDs(int trackIndex)
             setButtonLED(row4Buttons[trackIndex], trackColor);  // Solid when forward
         }
         
-        // Track on/off button (row 3) - lit when track is active
+        // Track on/off button (row 1) - lit when track is active
         if (overdubActive[odIdx])
         {
             setButtonLED(row1Buttons[trackIndex], trackColor);  // Solid when on
@@ -706,6 +913,17 @@ fun void updateTrackLEDs(int trackIndex)
         else
         {
             setButtonLED(row1Buttons[trackIndex], LED_OFF);  // Off when muted
+        }
+        
+        // Octave button (row 2) - flash when octave is active
+        if (overdubOctaveActive[odIdx])
+        {
+            if (ledFlashState) setButtonLED(row2Buttons[trackIndex], trackColor);
+            else setButtonLED(row2Buttons[trackIndex], LED_OFF);
+        }
+        else
+        {
+            setButtonLED(row2Buttons[trackIndex], trackColor);  // Solid when off
         }
     }
     else
@@ -716,6 +934,7 @@ fun void updateTrackLEDs(int trackIndex)
         setButtonLED(row5Buttons[trackIndex], LED_OFF);
         setButtonLED(row4Buttons[trackIndex], LED_OFF);
         setButtonLED(row1Buttons[trackIndex], LED_OFF);
+        setButtonLED(row2Buttons[trackIndex], LED_OFF);
     }
 }
 
@@ -883,7 +1102,7 @@ fun void midiListener()
                         }
                         break;
                     }
-                    // Track on/off button pressed (row 3)
+                    // Track on/off button pressed (row 1)
                     else if (note == row1Buttons[i])
                     {
                         if (i == 0 && loopExists)
@@ -907,6 +1126,28 @@ fun void midiListener()
                                 if (overdubActive[odIdx]) overdubPlayers[odIdx].gain(overdubVolumes[odIdx]);
                                 else overdubPlayers[odIdx].gain(0.0);
                             }
+                            updateTrackLEDs(i);
+                        }
+                        break;
+                    }
+                    // Octave button pressed (row 2)
+                    else if (note == row2Buttons[i])
+                    {
+                        if (i == 0 && loopExists)
+                        {
+                            // Toggle main loop octave
+                            !mainOctaveActive => mainOctaveActive;
+                            if (mainOctaveActive) 0.5 => mainOctaveMix.gain;
+                            else 0.0 => mainOctaveMix.gain;
+                            updateTrackLEDs(0);
+                        }
+                        else if (i > 0 && i - 1 < overdubCount)
+                        {
+                            // Toggle overdub octave
+                            i - 1 => int odIdx;
+                            !overdubOctaveActive[odIdx] => overdubOctaveActive[odIdx];
+                            if (overdubOctaveActive[odIdx]) 0.5 => overdubOctaveMix[odIdx].gain;
+                            else 0.0 => overdubOctaveMix[odIdx].gain;
                             updateTrackLEDs(i);
                         }
                         break;
@@ -1229,6 +1470,22 @@ fun void eraseAll()
 // ------------------------------------------------------
 <<< "\n=== VINTAGE LOOP STATION ===" >>>;
 
+// Check for command-line arguments (session file to load)
+0 => int sessionLoaded;
+if (me.args() > 0)
+{
+    me.arg(0) => string sessionFile;
+    <<< "Loading session file:", sessionFile >>>;
+    if (loadSession(sessionFile))
+    {
+        1 => sessionLoaded;
+    }
+    else
+    {
+        <<< "Failed to load session, starting fresh..." >>>;
+    }
+}
+
 // Try to connect BlueTurn
 <<< "Attempting to connect iRig BlueTurn..." >>>;
 if (openBlueTurn())
@@ -1255,7 +1512,7 @@ if (openMidiController())
     <<< "✓ APC Mini ready!" >>>;
     <<< "  Each column = one track (color: Green→Yellow→Red→repeat)" >>>;
     <<< "  Faders control volume/pan (switch with row 7/6 buttons)" >>>;
-    <<< "  Row 1: Track On/Off | Row 4: Reverse | Row 5: Speed" >>>;
+    <<< "  Row 1: Track On/Off | Row 2: Octave Down | Row 4: Reverse | Row 5: Speed" >>>;
     <<< "  Row 6: Pan mode | Row 7: Volume mode" >>>;
     <<< "  Flashing = active, Solid = available" >>>;
 }
@@ -1264,13 +1521,28 @@ else
     <<< "APC Mini not found - using keyboard controls only" >>>;
 }
 
-<<< "\nSelect mode:" >>>;
-<<< "[1] Measure Mode - Configurable beat loops with tap tempo (default:", beatsPerLoop, "beats)" >>>;
-<<< "[2] Free Mode - Record start/stop on keypress, any duration" >>>;
-
-// Mode selection
+// Mode selection (skip if session was loaded)
 KBHit kb;
-1 => int modeSelected;
+0 => int modeSelected;
+
+if (sessionLoaded)
+{
+    <<< "\n✓ Session loaded - starting in", (measureMode ? "Measure" : "Free"), "mode" >>>;
+    if (loopExists) 
+    {
+        <<< "Press [p] to play loaded session" >>>;
+    }
+    0 => modeSelected;  // Skip mode selection
+}
+else
+{
+    <<< "\nSelect mode:" >>>;
+    <<< "[1] Measure Mode - Configurable beat loops with tap tempo (default:", beatsPerLoop, "beats)" >>>;
+    <<< "[2] Free Mode - Record start/stop on keypress, any duration" >>>;
+    1 => modeSelected;  // Need to select mode
+}
+
+// Mode selection loop (only if not loaded from session)
 while (modeSelected)
 {
     kb => now;
@@ -1286,8 +1558,8 @@ while (modeSelected)
             <<< "\n✓ MEASURE MODE selected (", beatsPerLoop, "beats per loop)" >>>;
             <<< "RECORDING: [t] Tap Tempo | [b] Set Beat Length | [r] Record | [o] Overdub" >>>;
             <<< "PLAYBACK: [p] Play/Stop | [u] Undo | [e] Erase All | [0-9] Select/Toggle Track" >>>;
-            <<< "EFFECTS: [+/-/=] Speed | [v] Reverse | [{] [}] Track Vol | [[] []] Master Vol | [<] [>] Pan" >>>;
-            <<< "[q] Quit | [x/ESC] Emergency Stop" >>>;
+            <<< "EFFECTS: [+/-/=] Speed | [v] Reverse | [{/}] Track Vol | [[/]] Master Vol | [,/.] Pan | [/] Pan Reset" >>>;
+            <<< "[s] Save Session | [q] Quit | [x/ESC] Emergency Stop" >>>;
             break;  // Exit inner loop
         }
         else if (k == '2')
@@ -1297,8 +1569,8 @@ while (modeSelected)
             <<< "\n✓ FREE MODE selected" >>>;
             <<< "RECORDING: [r] Start/Stop Recording | [o] Overdub" >>>;
             <<< "PLAYBACK: [p] Play/Stop | [u] Undo | [e] Erase All | [0-9] Select/Toggle Track" >>>;
-            <<< "EFFECTS: [+/-/=] Speed | [v] Reverse | [{] [}] Track Vol | [[] []] Master Vol | [<] [>] Pan" >>>;
-            <<< "[q] Quit | [x/ESC] Emergency Stop" >>>;
+            <<< "EFFECTS: [+/-/=] Speed | [v] Reverse | [{/}] Track Vol | [[/]] Master Vol | [,/.] Pan | [/] Pan Reset" >>>;
+            <<< "[s] Save Session | [q] Quit | [x/ESC] Emergency Stop" >>>;
             break;  // Exit inner loop
         }
         else if (k == 'r')
@@ -1310,8 +1582,8 @@ while (modeSelected)
             <<< "\n✓ FREE MODE auto-selected (recording started)" >>>;
             <<< "RECORDING: [r] Start/Stop Recording | [o] Overdub" >>>;
             <<< "PLAYBACK: [p] Play/Stop | [u] Undo | [e] Erase All | [0-9] Select/Toggle Track" >>>;
-            <<< "EFFECTS: [+/-/=] Speed | [v] Reverse | [{] [}] Track Vol | [[] []] Master Vol | [<] [>] Pan" >>>;
-            <<< "[q] Quit | [x/ESC] Emergency Stop" >>>;
+            <<< "EFFECTS: [+/-/=] Speed | [v] Reverse | [{/}] Track Vol | [[/]] Master Vol | [,/.] Pan | [/] Pan Reset" >>>;
+            <<< "[s] Save Session | [q] Quit | [x/ESC] Emergency Stop" >>>;
             // Start recording after mode is properly set
             spork ~ recordLoop();
             break;  // Exit inner loop
@@ -1367,6 +1639,24 @@ while (true)
     else if (k == 'e')
     {
         eraseAll();
+    }
+    else if (k == 's')
+    {
+        // Quick save session
+        if (loopExists)
+        {
+            now => time current;
+            (current / 1::second) $ int => int timestamp;
+            "session_" + timestamp + ".cks" => string sessionFile;
+            saveSession(sessionFile);
+            "Session saved" => statusMessage;
+            showLED(0);
+        }
+        else
+        {
+            "Nothing to save" => statusMessage;
+            showLED(0);
+        }
     }
     // Speed controls
     else if (k == '+')
@@ -1488,6 +1778,7 @@ while (true)
     else if (k == 'x' || k == 27)  // 'x' key or ESC for emergency stop
     {
         <<< "EMERGENCY STOP - Exiting..." >>>;
+        1::ms => now;  // Allow message to print
         me.exit();
     }
     // Toggle loops with number keys
@@ -1529,12 +1820,29 @@ while (true)
     {
         if (loopExists)
         {
-            <<< "\nSave final mix to WAV? [y/n]" >>>;
+            <<< "\n[1] Save session + WAV" >>>;
+            <<< "[2] Save session only" >>>;
+            <<< "[3] Save WAV only" >>>;
+            <<< "[4] Quit without saving" >>>;
+            <<< "Choose option [1-4]:" >>>;
             kb => now;
-            kb.getchar() => int answer;
+            kb.getchar() => int option;
             
-            if (answer == 'y' || answer == 'Y')
+            // Generate timestamp for filenames
+            now => time current;
+            (current / 1::second) $ int => int timestamp;
+            "session_" + timestamp => string sessionName;
+            
+            if (option == '1' || option == '2')
             {
+                // Save session file
+                sessionName + ".cks" => string sessionFile;
+                saveSession(sessionFile);
+            }
+            
+            if (option == '1' || option == '3')
+            {
+                // Save WAV file
                 <<< "Recording final mix..." >>>;
                 
                 // If playing, wait for next loop start for clean recording
@@ -1545,7 +1853,7 @@ while (true)
                 }
                 
                 // Create output file
-                "final_mix.wav" => string filename;
+                sessionName + ".wav" => string filename;
                 WvOut wout => blackhole;
                 wout.wavFilename(filename);
                 
@@ -1595,6 +1903,7 @@ while (true)
         }
         
         <<< "Loop station stopped. Bye!" >>>;
+        1::ms => now;  // Allow message to print
         me.exit();
     }
     }  // End of while (kb.more())
