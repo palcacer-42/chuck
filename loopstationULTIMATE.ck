@@ -15,10 +15,59 @@ HidMsg blueTurnMsg;
 // MIDI Controller Setup for Akai APC Mini (Optional)
 MidiIn midiIn;
 MidiMsg midiMsg;
+MidiOut midiOut;
 0 => int useMidi;
 
 // APC Mini fader CC numbers (48-55 for the 8 vertical faders)
 [48, 49, 50, 51, 52, 53, 54, 55] @=> int faderCC[];
+
+// APC Mini button notes (8x8 grid, row 0=top, row 7=bottom)
+// Each array has 8 elements, one per column
+[8, 9, 10, 11, 12, 13, 14, 15] @=> int row1Buttons[];      // Row 1: Track on/off (mute)
+[40, 41, 42, 43, 44, 45, 46, 47] @=> int row5Buttons[];    // Row 5: Speed control
+[32, 33, 34, 35, 36, 37, 38, 39] @=> int row4Buttons[];    // Row 4: Reverse toggle
+[48, 49, 50, 51, 52, 53, 54, 55] @=> int panButtons[];     // Row 6: Pan mode
+[56, 57, 58, 59, 60, 61, 62, 63] @=> int volumeButtons[];  // Row 7: Volume mode
+
+// APC Mini LED colors (velocity values for note messages)
+1 => int LED_GREEN;
+5 => int LED_YELLOW;
+3 => int LED_RED;
+0 => int LED_OFF;
+
+// Track color assignments (repeating pattern: green, yellow, red)
+[LED_GREEN, LED_YELLOW, LED_RED, LED_GREEN, LED_YELLOW, LED_RED, LED_GREEN, LED_YELLOW] @=> int trackColors[];
+
+// Track control modes: 0 = volume, 1 = pan
+int trackMode[8];     // Mode for each of the 8 tracks
+float trackPan[8];    // Pan values for each track (-1.0 to 1.0)
+int ledFlashState;    // Global flash state (0 or 1) for all flashing LEDs
+
+// Initialize all tracks to volume mode with center pan
+for (0 => int i; i < 8; i++) 
+{
+    0 => trackMode[i];
+    0.0 => trackPan[i];
+}
+
+// LED flasher thread - toggles flash state every 250ms
+fun void ledFlasher()
+{
+    while (true)
+    {
+        250::ms => now;
+        !ledFlashState => ledFlashState;
+        
+        // Update all track LEDs with new flash state
+        if (useMidi)
+        {
+            for (0 => int i; i < 8; i++)
+            {
+                updateTrackLEDs(i);
+            }
+        }
+    }
+}
 
 adc => Gain input => blackhole;
 input.gain(0.8);
@@ -52,16 +101,18 @@ dur loopLength;
 
 // Multiple overdubs support
 LiSa overdubPlayers[10]; // Support up to 10 overdubs
+Pan2 overdubPan[10];     // Pan control for each overdub
 0 => int overdubCount;
 int overdubActive[10]; // Track which overdubs are active
 1 => int mainLoopActive; // Track if main loop is active
 
-// Initialize overdub players with LiSa buffers
+// Initialize overdub players with LiSa buffers and pan
 for (0 => int i; i < 10; i++)
 {
-    adc => overdubPlayers[i] => dac;
+    adc => overdubPlayers[i] => overdubPan[i] => dac;
     overdubPlayers[i].gain(0.9);
     overdubPlayers[i].maxVoices(1);
+    overdubPan[i].pan(0.0);  // Center pan initially
     1 => overdubActive[i]; // Start active by default
 }
 
@@ -81,10 +132,19 @@ time recordStart;  // Track when recording started
 0.9 => float mainVolume;     // Master volume (0.0 to 1.0)
 0.0 => float mainPan;        // Pan position (-1.0 = left, 0.0 = center, 1.0 = right)
 
-// Individual track volumes
+// Individual track volumes, speeds, and reverse
 0.9 => float mainTrackVolume;     // Main loop volume
 float overdubVolumes[10];         // Overdub track volumes
-for (0 => int i; i < 10; i++) 0.9 => overdubVolumes[i];
+float overdubSpeeds[10];          // Overdub speeds (per track)
+int overdubReverse[10];           // Overdub reverse (per track)
+
+// Initialize overdub effects
+for (0 => int i; i < 10; i++)
+{
+    0.9 => overdubVolumes[i];
+    1.0 => overdubSpeeds[i];      // Normal speed
+    1 => overdubReverse[i];       // Forward
+}
 
 0 => int selectedTrack;      // Currently selected track (0 = main, 1-10 = overdubs)
 
@@ -397,6 +457,9 @@ fun void stopFreeRecording()
     "○ LOOP RECORDED! " + (loopLength/second) + " sec" => statusMessage;
     showLED(0);
     
+    // Update MIDI LEDs (main loop is now available)
+    updateTrackLEDs(0);
+    
     // Start playback
     startPlayback();
 }
@@ -480,7 +543,7 @@ fun void blueTurnListener()
 // Function to open Akai APC Mini MIDI controller (Optional)
 fun int openMidiController()
 {
-    // Try to find and open APC Mini
+    // Try to find and open APC Mini for input and output
     for (0 => int i; i < 8; i++)  // Check first 8 MIDI devices
     {
         if (midiIn.open(i))
@@ -488,6 +551,8 @@ fun int openMidiController()
             // Check if it's an APC Mini (name contains "APC")
             if (midiIn.name().find("APC") >= 0 || midiIn.name().find("apc") >= 0)
             {
+                // Also open MIDI output for LED control
+                midiOut.open(i);
                 <<< "✓ MIDI Controller connected:", midiIn.name() >>>;
                 return 1;
             }
@@ -502,7 +567,171 @@ fun int openMidiController()
     return 0;
 }
 
-// MIDI listener thread for APC Mini faders
+// Function to set LED color on APC Mini button
+fun void setButtonLED(int note, int color)
+{
+    if (!useMidi) return;
+    
+    midiMsg.data1 => int oldData1;
+    midiMsg.data2 => int oldData2;
+    midiMsg.data3 => int oldData3;
+    
+    0x90 => midiMsg.data1;  // Note On message
+    note => midiMsg.data2;   // Note number
+    color => midiMsg.data3;  // Velocity = color
+    midiOut.send(midiMsg);
+    
+    oldData1 => midiMsg.data1;
+    oldData2 => midiMsg.data2;
+    oldData3 => midiMsg.data3;
+}
+
+// Function to update LEDs for a specific track
+fun void updateTrackLEDs(int trackIndex)
+{
+    if (!useMidi) return;
+    
+    // Get the color for this track
+    trackColors[trackIndex] => int trackColor;
+    
+    if (trackIndex == 0)
+    {
+        // Main loop - show buttons if loop exists
+        if (loopExists)
+        {
+            // Volume and Pan buttons (rows 7 and 6)
+            if (trackMode[0] == 0) // Volume mode active
+            {
+                // Volume flashes, Pan stays solid
+                if (ledFlashState) setButtonLED(volumeButtons[0], trackColor);
+                else setButtonLED(volumeButtons[0], LED_OFF);
+                setButtonLED(panButtons[0], trackColor);  // Solid
+            }
+            else // Pan mode active
+            {
+                // Pan flashes, Volume stays solid
+                setButtonLED(volumeButtons[0], trackColor);  // Solid
+                if (ledFlashState) setButtonLED(panButtons[0], trackColor);
+                else setButtonLED(panButtons[0], LED_OFF);
+            }
+            
+            // Speed control button (row 5) - show if speed is not 1.0
+            if (mainSpeed != 1.0)
+            {
+                if (ledFlashState) setButtonLED(row5Buttons[0], trackColor);
+                else setButtonLED(row5Buttons[0], LED_OFF);
+            }
+            else
+            {
+                setButtonLED(row5Buttons[0], trackColor);  // Solid when at normal speed
+            }
+            
+            // Reverse button (row 4) - flash when reverse is active
+            if (mainReverse == -1)
+            {
+                if (ledFlashState) setButtonLED(row4Buttons[0], trackColor);
+                else setButtonLED(row4Buttons[0], LED_OFF);
+            }
+            else
+            {
+                setButtonLED(row4Buttons[0], trackColor);  // Solid when forward
+            }
+            
+            // Track on/off button (row 3) - lit when track is active
+            if (mainLoopActive)
+            {
+                setButtonLED(row1Buttons[0], trackColor);  // Solid when on
+            }
+            else
+            {
+                setButtonLED(row1Buttons[0], LED_OFF);  // Off when muted
+            }
+        }
+        else
+        {
+            // No loop - turn off all buttons
+            setButtonLED(volumeButtons[0], LED_OFF);
+            setButtonLED(panButtons[0], LED_OFF);
+            setButtonLED(row5Buttons[0], LED_OFF);
+            setButtonLED(row4Buttons[0], LED_OFF);
+            setButtonLED(row1Buttons[0], LED_OFF);
+        }
+    }
+    else if (trackIndex - 1 < overdubCount)
+    {
+        // Overdub track - show all buttons
+        if (trackMode[trackIndex] == 0) // Volume mode active
+        {
+            // Volume flashes, Pan stays solid
+            if (ledFlashState) setButtonLED(volumeButtons[trackIndex], trackColor);
+            else setButtonLED(volumeButtons[trackIndex], LED_OFF);
+            setButtonLED(panButtons[trackIndex], trackColor);  // Solid
+        }
+        else // Pan mode active
+        {
+            // Pan flashes, Volume stays solid
+            setButtonLED(volumeButtons[trackIndex], trackColor);  // Solid
+            if (ledFlashState) setButtonLED(panButtons[trackIndex], trackColor);
+            else setButtonLED(panButtons[trackIndex], LED_OFF);
+        }
+        
+        // Speed control button (row 5) - show if speed is not 1.0
+        trackIndex - 1 => int odIdx;
+        if (overdubSpeeds[odIdx] != 1.0)
+        {
+            if (ledFlashState) setButtonLED(row5Buttons[trackIndex], trackColor);
+            else setButtonLED(row5Buttons[trackIndex], LED_OFF);
+        }
+        else
+        {
+            setButtonLED(row5Buttons[trackIndex], trackColor);  // Solid when at normal speed
+        }
+        
+        // Reverse button (row 4) - flash when reverse is active
+        if (overdubReverse[odIdx] == -1)
+        {
+            if (ledFlashState) setButtonLED(row4Buttons[trackIndex], trackColor);
+            else setButtonLED(row4Buttons[trackIndex], LED_OFF);
+        }
+        else
+        {
+            setButtonLED(row4Buttons[trackIndex], trackColor);  // Solid when forward
+        }
+        
+        // Track on/off button (row 3) - lit when track is active
+        if (overdubActive[odIdx])
+        {
+            setButtonLED(row1Buttons[trackIndex], trackColor);  // Solid when on
+        }
+        else
+        {
+            setButtonLED(row1Buttons[trackIndex], LED_OFF);  // Off when muted
+        }
+    }
+    else
+    {
+        // Track doesn't exist yet - turn off all LEDs
+        setButtonLED(volumeButtons[trackIndex], LED_OFF);
+        setButtonLED(panButtons[trackIndex], LED_OFF);
+        setButtonLED(row5Buttons[trackIndex], LED_OFF);
+        setButtonLED(row4Buttons[trackIndex], LED_OFF);
+        setButtonLED(row1Buttons[trackIndex], LED_OFF);
+    }
+}
+
+// Function to initialize all LEDs (turn off unused, set active tracks)
+fun void initializeAllLEDs()
+{
+    if (!useMidi) return;
+    
+    // Update LEDs for all 8 possible tracks
+    for (0 => int i; i < 8; i++)
+    {
+        updateTrackLEDs(i);
+    }
+}
+
+// MIDI listener thread for APC Mini faders and buttons
 fun void midiListener()
 {
     while (true)
@@ -511,34 +740,174 @@ fun void midiListener()
         
         while (midiIn.recv(midiMsg))
         {
-            // Check if it's a Control Change message (status byte 0xB0-0xBF)
+            // Check if it's a Control Change message (faders)
             if ((midiMsg.data1 & 0xF0) == 0xB0)
             {
                 midiMsg.data2 => int ccNumber;  // CC number
                 midiMsg.data3 => int ccValue;   // CC value (0-127)
-                
-                // Convert MIDI value (0-127) to volume (0.0-1.0)
-                ccValue / 127.0 => float volume;
                 
                 // Check which fader was moved
                 for (0 => int i; i < faderCC.size(); i++)
                 {
                     if (ccNumber == faderCC[i])
                     {
-                        // Fader 0 controls main loop, faders 1-7 control overdubs 1-7
-                        if (i == 0)
+                        // Check if this track exists
+                        if (i == 0 && !loopExists) break;
+                        if (i > 0 && i - 1 >= overdubCount) break;
+                        
+                        // Process based on current mode
+                        if (trackMode[i] == 0) // Volume mode
                         {
-                            volume => mainTrackVolume;
-                            if (isPlaying && mainLoopActive) mainLoop.gain(mainTrackVolume);
-                        }
-                        else if (i - 1 < overdubCount)
-                        {
-                            i - 1 => int odIdx;
-                            volume => overdubVolumes[odIdx];
-                            if (isPlaying && overdubActive[odIdx]) 
+                            ccValue / 127.0 => float volume;
+                            
+                            if (i == 0)
                             {
-                                overdubPlayers[odIdx].gain(overdubVolumes[odIdx]);
+                                volume => mainTrackVolume;
+                                if (isPlaying && mainLoopActive) mainLoop.gain(mainTrackVolume);
                             }
+                            else
+                            {
+                                i - 1 => int odIdx;
+                                volume => overdubVolumes[odIdx];
+                                if (isPlaying && overdubActive[odIdx]) 
+                                {
+                                    overdubPlayers[odIdx].gain(overdubVolumes[odIdx]);
+                                }
+                            }
+                        }
+                        else // Pan mode
+                        {
+                            // Convert MIDI value (0-127) to pan (-1.0 to 1.0)
+                            (ccValue - 63.5) / 63.5 => float pan;
+                            pan => trackPan[i];
+                            
+                            if (i == 0)
+                            {
+                                masterPan.pan(pan);
+                            }
+                            else
+                            {
+                                i - 1 => int odIdx;
+                                overdubPan[odIdx].pan(pan);
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+            // Check if it's a Note On message (button press)
+            else if ((midiMsg.data1 & 0xF0) == 0x90 && midiMsg.data3 > 0)
+            {
+                midiMsg.data2 => int note;
+                
+                // Check if it's a volume or pan button
+                for (0 => int i; i < 8; i++)
+                {
+                    // Volume button pressed
+                    if (note == volumeButtons[i])
+                    {
+                        // Check if track exists
+                        if (i == 0 && loopExists)
+                        {
+                            0 => trackMode[i];  // Set to volume mode
+                            updateTrackLEDs(i);
+                        }
+                        else if (i > 0 && i - 1 < overdubCount)
+                        {
+                            0 => trackMode[i];  // Set to volume mode
+                            updateTrackLEDs(i);
+                        }
+                        break;
+                    }
+                    // Pan button pressed
+                    else if (note == panButtons[i])
+                    {
+                        // Check if track exists
+                        if (i == 0 && loopExists)
+                        {
+                            1 => trackMode[i];  // Set to pan mode
+                            updateTrackLEDs(i);
+                        }
+                        else if (i > 0 && i - 1 < overdubCount)
+                        {
+                            1 => trackMode[i];  // Set to pan mode
+                            updateTrackLEDs(i);
+                        }
+                        break;
+                    }
+                    // Speed button pressed
+                    else if (note == row5Buttons[i])
+                    {
+                        if (i == 0 && loopExists)
+                        {
+                            // Main loop speed
+                            if (mainSpeed == 1.0) 1.5 => mainSpeed;
+                            else if (mainSpeed == 1.5) 2.0 => mainSpeed;
+                            else if (mainSpeed == 2.0) 0.5 => mainSpeed;
+                            else 1.0 => mainSpeed;
+                            
+                            if (isPlaying) mainLoop.rate(mainSpeed * mainReverse);
+                            updateTrackLEDs(0);
+                        }
+                        else if (i > 0 && i - 1 < overdubCount)
+                        {
+                            // Overdub speed
+                            i - 1 => int odIdx;
+                            if (overdubSpeeds[odIdx] == 1.0) 1.5 => overdubSpeeds[odIdx];
+                            else if (overdubSpeeds[odIdx] == 1.5) 2.0 => overdubSpeeds[odIdx];
+                            else if (overdubSpeeds[odIdx] == 2.0) 0.5 => overdubSpeeds[odIdx];
+                            else 1.0 => overdubSpeeds[odIdx];
+                            
+                            if (isPlaying) overdubPlayers[odIdx].rate(overdubSpeeds[odIdx] * overdubReverse[odIdx]);
+                            updateTrackLEDs(i);
+                        }
+                        break;
+                    }
+                    // Reverse button pressed
+                    else if (note == row4Buttons[i])
+                    {
+                        if (i == 0 && loopExists)
+                        {
+                            // Main loop reverse
+                            -1 * mainReverse => mainReverse;
+                            if (isPlaying) mainLoop.rate(mainSpeed * mainReverse);
+                            updateTrackLEDs(0);
+                        }
+                        else if (i > 0 && i - 1 < overdubCount)
+                        {
+                            // Overdub reverse
+                            i - 1 => int odIdx;
+                            -1 * overdubReverse[odIdx] => overdubReverse[odIdx];
+                            if (isPlaying) overdubPlayers[odIdx].rate(overdubSpeeds[odIdx] * overdubReverse[odIdx]);
+                            updateTrackLEDs(i);
+                        }
+                        break;
+                    }
+                    // Track on/off button pressed (row 3)
+                    else if (note == row1Buttons[i])
+                    {
+                        if (i == 0 && loopExists)
+                        {
+                            // Toggle main loop on/off
+                            !mainLoopActive => mainLoopActive;
+                            if (isPlaying)
+                            {
+                                if (mainLoopActive) mainLoop.gain(mainTrackVolume);
+                                else mainLoop.gain(0.0);
+                            }
+                            updateTrackLEDs(0);
+                        }
+                        else if (i > 0 && i - 1 < overdubCount)
+                        {
+                            // Toggle overdub on/off
+                            i - 1 => int odIdx;
+                            !overdubActive[odIdx] => overdubActive[odIdx];
+                            if (isPlaying)
+                            {
+                                if (overdubActive[odIdx]) overdubPlayers[odIdx].gain(overdubVolumes[odIdx]);
+                                else overdubPlayers[odIdx].gain(0.0);
+                            }
+                            updateTrackLEDs(i);
                         }
                         break;
                     }
@@ -598,7 +967,7 @@ fun void startPlayback()
         overdubPlayers[i].loopEnd(loopLength);
         overdubPlayers[i].loopEndRec(loopLength - 5::ms);  // 5ms crossfade
         overdubPlayers[i].loop(1);
-        overdubPlayers[i].rate(1.0);  // Overdubs always at normal rate for sync
+        overdubPlayers[i].rate(overdubSpeeds[i] * overdubReverse[i]);  // Apply speed and reverse
         if (overdubActive[i]) overdubPlayers[i].gain(overdubVolumes[i]);
         else overdubPlayers[i].gain(0.0);
     }
@@ -744,6 +1113,9 @@ fun void recordOverdub()
     overdubCount++;
     "OVERDUB " + overdubCount + " DONE! Total: " + overdubCount => statusMessage;
     showLED(0);
+    
+    // Update MIDI LEDs (new overdub track is now available)
+    updateTrackLEDs(overdubCount);  // overdubCount already incremented, so this is the new track
 }
 
 // Undo the last overdub (remove it completely)
@@ -847,6 +1219,9 @@ fun void eraseAll()
     
     "ALL CLEARED!" => statusMessage;
     showLED(0);
+    
+    // Turn off all MIDI LEDs
+    initializeAllLEDs();
 }
 
 // ------------------------------------------------------
@@ -875,12 +1250,18 @@ if (openMidiController())
 {
     1 => useMidi;
     spork ~ midiListener();
-    <<< "✓ APC Mini ready! Faders control track volumes:" >>>;
-    <<< "  Fader 1: Main Loop | Faders 2-8: Overdubs 1-7" >>>;
+    spork ~ ledFlasher();  // Start LED flasher thread
+    initializeAllLEDs();  // Initialize LED display
+    <<< "✓ APC Mini ready!" >>>;
+    <<< "  Each column = one track (color: Green→Yellow→Red→repeat)" >>>;
+    <<< "  Faders control volume/pan (switch with row 7/6 buttons)" >>>;
+    <<< "  Row 1: Track On/Off | Row 4: Reverse | Row 5: Speed" >>>;
+    <<< "  Row 6: Pan mode | Row 7: Volume mode" >>>;
+    <<< "  Flashing = active, Solid = available" >>>;
 }
 else
 {
-    <<< "APC Mini not found - using keyboard volume controls only" >>>;
+    <<< "APC Mini not found - using keyboard controls only" >>>;
 }
 
 <<< "\nSelect mode:" >>>;
