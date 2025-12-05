@@ -15,12 +15,10 @@ HidMsg blueTurnMsg;
 adc => Gain input => blackhole;
 input.gain(0.8);
 
-// Main loop using LiSa buffer with volume control and pan
-LiSa mainLoop => Gain masterGain => Pan2 masterPan => dac;
+// Main loop using LiSa buffer
+LiSa mainLoop => dac;
 adc => mainLoop;
 mainLoop.gain(0.9);
-masterGain.gain(0.9);  // Master volume control
-masterPan.pan(0.0);    // Center pan (-1.0 = left, 0.0 = center, 1.0 = right)
 mainLoop.maxVoices(1);
 
 Gain clickGain => dac;
@@ -63,38 +61,13 @@ Event loopStart;
 time lastTap;
 time recordStart;  // Track when recording started
 
-// Status message for three-line display
-"" => string statusMessage;
-0 => int displayInitialized;
-
-// Effect controls
-1.0 => float mainSpeed;      // Speed/pitch control (0.5 = half speed, 2.0 = double)
-1 => int mainReverse;        // 1 = forward, -1 = reverse
-0.9 => float mainVolume;     // Master volume (0.0 to 1.0)
-0.0 => float mainPan;        // Pan position (-1.0 = left, 0.0 = center, 1.0 = right)
-
-// Individual track volumes
-0.9 => float mainTrackVolume;     // Main loop volume
-float overdubVolumes[10];         // Overdub track volumes
-for (0 => int i; i < 10; i++) 0.9 => overdubVolumes[i];
-
-0 => int selectedTrack;      // Currently selected track (0 = main, 1-10 = overdubs)
-
 // ------------------------------------------------------
 // LED RING: EXACT ○ and ●
 // ------------------------------------------------------
 
-// --- show LED ring in console with three stable lines ---
+// --- show LED ring in console ---
 fun void showLED(int pos)
 {
-    // Initialize display with 3 blank lines on first call
-    if (!displayInitialized)
-    {
-        chout <= "\n\n\n";  // Create 3 lines
-        1 => displayInitialized;
-    }
-    
-    // Build LED ring (Line 3)
     "" => string leds;
     for (0 => int i; i < ledCount; i++)
     {
@@ -105,56 +78,8 @@ fun void showLED(int pos)
         if ((i + 1) % 4 == 0 && i < ledCount - 1) leds + " " => leds;
     }
     
-    // Build track status (Line 2) with effects display
-    "Tracks: " => string tracks;
-    
-    // Main loop (track 0)
-    if (selectedTrack == 0) tracks + "\033[1m" => tracks;  // Bold for selected
-    tracks + "[0:" => tracks;
-    if (mainLoopActive) tracks + "●" => tracks;
-    else tracks + "○" => tracks;
-    
-    // Show effects for main loop
-    "" => string fx;
-    if (mainSpeed != 1.0) {
-        if (fx != "") fx + "," => fx;
-        fx + "spd:" => fx;
-        Math.floor(mainSpeed * 10 + 0.5) / 10.0 => float roundedSpeed;
-        fx + roundedSpeed => fx;
-    }
-    if (mainReverse == -1) {
-        if (fx != "") fx + "," => fx;
-        fx + "rev" => fx;
-    }
-    if (fx != "") tracks + " " + fx => tracks;
-    tracks + "]" => tracks;
-    if (selectedTrack == 0) tracks + "\033[0m" => tracks;  // Reset bold
-    
-    // Overdub tracks
-    for (0 => int i; i < overdubCount; i++)
-    {
-        tracks + " " => tracks;
-        if (selectedTrack == i + 1) tracks + "\033[1m" => tracks;  // Bold for selected
-        tracks + "[" + (i+1) + ":" => tracks;
-        if (overdubActive[i]) tracks + "●" => tracks;
-        else tracks + "○" => tracks;
-        tracks + "]" => tracks;
-        if (selectedTrack == i + 1) tracks + "\033[0m" => tracks;  // Reset bold
-    }
-    
-    // Pad lines to clear previous content (fixed width 80 chars)
-    statusMessage => string msg;
-    tracks => string trk;
-    leds => string led;
-    while (msg.length() < 80) msg + " " => msg;
-    while (trk.length() < 80) trk + " " => trk;
-    while (led.length() < 80) led + " " => led;
-    
-    // Move cursor up 3 lines to start, print all 3 lines, cursor stays at end
-    chout <= "\033[3A";           // Move up 3 lines
-    chout <= "\r" <= msg;         // Line 1: Status (no newline, cursor at end of line 1)
-    chout <= "\n\r" <= trk;       // Line 2: Tracks (newline first, then overwrite)
-    chout <= "\n\r" <= led;       // Line 3: LEDs (newline first, then overwrite)
+    // Use chout with carriage return for static display (overwrites same line)
+    chout <= "\r" <= leds <= " ";
     chout.flush();
 }
 
@@ -301,17 +226,14 @@ fun void recordMeasureLoop()
     // If playback is active, wait for the next loop to start for sync
     if (isPlaying)
     {
-        "Waiting for next loop..." => statusMessage;
-        showLED(0);
+        <<< "Waiting for next loop to start recording…" >>>;
         loopStart => now;
-        "RECORDING " + beatsPerLoop + "-beat loop..." => statusMessage;
-        showLED(0);
+        <<< "RECORDING new", beatsPerLoop, "-beat loop…" >>>;
     }
     else
     {
         // Only use metronome countdown when recording the first loop (one extra beat)
-        "RECORDING " + (beatsPerLoop + 1) + " beats with countdown..." => statusMessage;
-        showLED(0);
+        <<< "RECORDING", beatsPerLoop + 1, "beats –", beatsPerLoop + 1, "-beat countdown…" >>>;
         
         // --- Metronome countdown ---
         for (0 => int i; i < beatsPerLoop + 1; i++)
@@ -345,8 +267,7 @@ fun void recordMeasureLoop()
     mainLoop.loopEnd(loopLength);  // Set loop end AFTER recording
     0 => isRecording;
     1 => loopExists;
-    "LOOP RECORDED!" => statusMessage;
-    showLED(0);
+    <<< "LOOP RECORDED!" >>>;
     
     // Start playback directly (not spawned - we're already in a spawned shred)
     startPlayback();
@@ -359,8 +280,7 @@ fun void startFreeRecording()
     1 => freeLoop; // this loop is free-mode based
     now => recordStart;
     
-    "● RECORDING... Press [r] to stop" => statusMessage;
-    showLED(0);
+    <<< "● RECORDING... Press [r] again to stop" >>>;
     
     // Set a large buffer size (e.g., 60 seconds max)
     60::second => dur maxDuration;
@@ -386,8 +306,7 @@ fun void stopFreeRecording()
     
     0 => isRecording;
     1 => loopExists;
-    "○ LOOP RECORDED! " + (loopLength/second) + " sec" => statusMessage;
-    showLED(0);
+    <<< "○ LOOP RECORDED!", (loopLength/second), "seconds" >>>;
     
     // Start playback
     startPlayback();
@@ -460,8 +379,7 @@ fun void blueTurnListener()
                     }
                     else 
                     {
-                        "Record first with Button 1" => statusMessage;
-                        showLED(0);
+                        <<< "Record first with Button 1" >>>;
                     }
                 }
             }
@@ -500,18 +418,18 @@ fun void startPlayback()
     if (!loopExists) return;
     1 => isPlaying;
 
-    // CRITICAL: Start all loops at EXACTLY the same time with same settings
-    // Configure main loop
+    // Start main loop playback
     mainLoop.playPos(0::ms);
     mainLoop.loopStart(0::ms);
     mainLoop.loopEnd(loopLength);
     mainLoop.loopEndRec(loopLength - 5::ms);  // Start crossfade 5ms before end
     mainLoop.loop(1);  // Enable looping
-    mainLoop.rate(mainSpeed * mainReverse);  // Apply speed and reverse
-    if (mainLoopActive) mainLoop.gain(mainTrackVolume);
+    // Set correct gain based on active state before starting playback
+    if (mainLoopActive) mainLoop.gain(0.9);
     else mainLoop.gain(0.0);
+    mainLoop.play(1);
 
-    // Configure all existing overdubs (but don't start yet)
+    // Start all existing overdubs
     for (0 => int i; i < overdubCount; i++)
     {
         overdubPlayers[i].playPos(0::ms);
@@ -519,34 +437,23 @@ fun void startPlayback()
         overdubPlayers[i].loopEnd(loopLength);
         overdubPlayers[i].loopEndRec(loopLength - 5::ms);  // 5ms crossfade
         overdubPlayers[i].loop(1);
-        overdubPlayers[i].rate(1.0);  // Overdubs always at normal rate for sync
-        if (overdubActive[i]) overdubPlayers[i].gain(overdubVolumes[i]);
+        // Set correct gain based on active state before starting playback
+        if (overdubActive[i]) overdubPlayers[i].gain(0.9);
         else overdubPlayers[i].gain(0.0);
-    }
-    
-    // NOW start everything at once for perfect sync
-    mainLoop.play(1);
-    for (0 => int i; i < overdubCount; i++)
-    {
         overdubPlayers[i].play(1);
     }
 
     loopStart.broadcast();
 
-    "PLAYING..." => statusMessage;
-    showLED(0);
+    <<< "PLAYING…" >>>;
 
     while (isPlaying && loopExists)
     {
-        now => time loopStartTime;
         1 => int stepDone;
-        
-        // Calculate actual loop duration accounting for speed/rate
-        loopLength / Math.fabs(mainSpeed * mainReverse) => dur actualLoopDur;
         
         if (!freeLoop)
         {
-            // MEASURE MODE: Sample-accurate LED ring animation
+            // MEASURE MODE: Show LED ring animation
             for (0 => int s; s < ledCount; s++)
             {
                 if (!isPlaying)
@@ -555,14 +462,14 @@ fun void startPlayback()
                     break;
                 }
                 showLED(s);
-                // Wait until exact time position (sample-accurate, accounting for rate)
-                loopStartTime + (s + 1) * actualLoopDur / ledCount => time nextTime;
-                nextTime - now => now;
+                (loopLength / ledCount) => now;
             }
         }
         else
         {
-            // FREE MODE: Sample-accurate LED animation
+            // FREE MODE: Show fixed LED ring as reference
+            // Divide loop into ledCount segments for visual reference
+            (loopLength / ledCount) => dur segment;
             for (0 => int s; s < ledCount; s++)
             {
                 if (!isPlaying)
@@ -571,9 +478,7 @@ fun void startPlayback()
                     break;
                 }
                 showLED(s);
-                // Wait until exact time position (sample-accurate, accounting for rate)
-                loopStartTime + (s + 1) * actualLoopDur / ledCount => time nextTime;
-                nextTime - now => now;
+                segment => now;
             }
         }
         
@@ -605,66 +510,53 @@ fun void recordOverdub()
 {
     if (!isPlaying || !loopExists)
     {
-        "Play loop first [p]" => statusMessage;
-        showLED(0);
+        <<< "Play loop first [p]" >>>;
         return;
     }
 
     if (isOverdubbing)
     {
-        "Overdub in progress..." => statusMessage;
-        showLED(0);
+        <<< "Overdub already in progress..." >>>;
         return;
     }
 
     if (overdubCount >= 10)
     {
-        "Max overdubs (10) reached!" => statusMessage;
-        showLED(0);
+        <<< "Maximum overdubs (10) reached!" >>>;
         return;
     }
 
     // Both modes: Wait for loop start for sync
-    "OVERDUB " + (overdubCount + 1) + " - waiting..." => statusMessage;
-    showLED(0);
+    <<< "OVERDUB", overdubCount + 1, "– waiting for next loop…" >>>;
     loopStart => now;
     
     1 => isOverdubbing;
-    "OVERDUB " + (overdubCount + 1) + " RECORDING..." => statusMessage;
-    showLED(0);
+    <<< "OVERDUB", overdubCount + 1, "RECORDING..." >>>;
     
-    // Configure LiSa buffer for this overdub WITH LOOPING ENABLED
+    // Configure LiSa buffer for this overdub
     overdubPlayers[overdubCount].duration(loopLength);
     overdubPlayers[overdubCount].recPos(0::ms);
     overdubPlayers[overdubCount].recRamp(0::ms);  // No ramp for precise timing
     overdubPlayers[overdubCount].loopStart(0::ms);
     overdubPlayers[overdubCount].loopEnd(loopLength);
-    overdubPlayers[overdubCount].loopEndRec(loopLength - 5::ms);  // 5ms crossfade
-    overdubPlayers[overdubCount].loop(1);  // Enable looping DURING recording
-    overdubPlayers[overdubCount].rate(1.0);  // Always normal rate for sync
-    overdubPlayers[overdubCount].gain(overdubVolumes[overdubCount]);
-    
-    // Start recording
     overdubPlayers[overdubCount].record(1);
-    
-    // Start playback IMMEDIATELY (play while recording for zero latency)
-    overdubPlayers[overdubCount].playPos(0::ms);
-    overdubPlayers[overdubCount].play(1);
     
     // Record for exactly one loop length
     loopLength => now;
     
-    // Stop recording - playback continues automatically
+    // Stop recording
     overdubPlayers[overdubCount].record(0);
     
     0 => isOverdubbing;
     
-    // Mark as active
-    1 => overdubActive[overdubCount];
+    // Start playback of the new overdub from the beginning (it was recorded from 0)
+    overdubPlayers[overdubCount].playPos(0::ms);  // Always start from 0 for perfect sync
+    overdubPlayers[overdubCount].loopEndRec(loopLength - 5::ms);  // 5ms crossfade
+    overdubPlayers[overdubCount].loop(1);
+    overdubPlayers[overdubCount].play(1);
     
     overdubCount++;
-    "OVERDUB " + overdubCount + " DONE! Total: " + overdubCount => statusMessage;
-    showLED(0);
+    <<< "OVERDUB", overdubCount, "RECORDED! Total overdubs:", overdubCount >>>;
 }
 
 // Undo the last overdub (remove it completely)
@@ -672,15 +564,13 @@ fun void undoLastOverdub()
 {
     if (!loopExists)
     {
-        "No loop exists" => statusMessage;
-        showLED(0);
+        <<< "No loop exists." >>>;
         return;
     }
 
     if (overdubCount == 0)
     {
-        "No overdub to undo" => statusMessage;
-        showLED(0);
+        <<< "No overdub to undo." >>>;
         return;
     }
 
@@ -702,8 +592,7 @@ fun void undoLastOverdub()
     // Mark as inactive (will be skipped on next playback restart)
     0 => overdubActive[lastIndex];
 
-    "UNDID overdub " + (lastIndex + 1) + " - Remaining: " + overdubCount => statusMessage;
-    showLED(0);
+    <<< "UNDID overdub", lastIndex + 1, "- Remaining overdubs:", overdubCount >>>;
 }
 
 // Erase everything and start fresh
@@ -711,8 +600,7 @@ fun void eraseAll()
 {
     if (!loopExists)
     {
-        "Nothing to erase" => statusMessage;
-        showLED(0);
+        <<< "Nothing to erase." >>>;
         return;
     }
 
@@ -766,8 +654,13 @@ fun void eraseAll()
     1 => mainLoopActive;
     0 => freeLoop;
     
-    "ALL CLEARED!" => statusMessage;
-    showLED(0);
+    // Clear LED display
+    chout <= "\r";
+    for (0 => int i; i < ledCount; i++) chout <= " ";
+    chout <= "\r";
+    chout.flush();
+    
+    <<< "ALL CLEARED!" >>>;
 }
 
 // ------------------------------------------------------
@@ -810,10 +703,7 @@ while (modeSelected)
             1 => measureMode;
             0 => modeSelected;
             <<< "\n✓ MEASURE MODE selected (", beatsPerLoop, "beats per loop)" >>>;
-            <<< "RECORDING: [t] Tap Tempo | [b] Set Beat Length | [r] Record | [o] Overdub" >>>;
-            <<< "PLAYBACK: [p] Play/Stop | [u] Undo | [e] Erase All | [0-9] Select/Toggle Track" >>>;
-            <<< "EFFECTS: [+/-/=] Speed | [v] Reverse | [{] [}] Track Vol | [[] []] Master Vol | [<] [>] Pan" >>>;
-            <<< "[q] Quit | [x/ESC] Emergency Stop" >>>;
+            <<< "[t] Tap Tempo | [b] Set Beat Length | [r] Record loop | [p] Play/Stop | [o] Add Overdub | [u] Undo Last | [e] Erase All | [0-9] Toggle Loops | [x/ESC] Emergency Stop | [q] Quit" >>>;
             break;  // Exit inner loop
         }
         else if (k == '2')
@@ -821,10 +711,7 @@ while (modeSelected)
             0 => measureMode;
             0 => modeSelected;
             <<< "\n✓ FREE MODE selected" >>>;
-            <<< "RECORDING: [r] Start/Stop Recording | [o] Overdub" >>>;
-            <<< "PLAYBACK: [p] Play/Stop | [u] Undo | [e] Erase All | [0-9] Select/Toggle Track" >>>;
-            <<< "EFFECTS: [+/-/=] Speed | [v] Reverse | [{] [}] Track Vol | [[] []] Master Vol | [<] [>] Pan" >>>;
-            <<< "[q] Quit | [x/ESC] Emergency Stop" >>>;
+            <<< "[r] Start/Stop Recording | [p] Play/Stop | [o] Add Overdub | [u] Undo Last | [e] Erase All | [0-9] Toggle Loops | [x/ESC] Emergency Stop | [q] Quit" >>>;
             break;  // Exit inner loop
         }
         else if (k == 'r')
@@ -834,10 +721,7 @@ while (modeSelected)
             0 => measureMode;
             0 => modeSelected;
             <<< "\n✓ FREE MODE auto-selected (recording started)" >>>;
-            <<< "RECORDING: [r] Start/Stop Recording | [o] Overdub" >>>;
-            <<< "PLAYBACK: [p] Play/Stop | [u] Undo | [e] Erase All | [0-9] Select/Toggle Track" >>>;
-            <<< "EFFECTS: [+/-/=] Speed | [v] Reverse | [{] [}] Track Vol | [[] []] Master Vol | [<] [>] Pan" >>>;
-            <<< "[q] Quit | [x/ESC] Emergency Stop" >>>;
+            <<< "[r] Start/Stop Recording | [p] Play/Stop | [o] Add Overdub | [u] Undo Last | [e] Erase All | [0-9] Toggle Loops | [x/ESC] Emergency Stop | [q] Quit" >>>;
             // Start recording after mode is properly set
             spork ~ recordLoop();
             break;  // Exit inner loop
@@ -877,10 +761,7 @@ while (true)
     {
         if (isPlaying) 0 => isPlaying;
         else if (loopExists) spork ~ startPlayback();
-        else {
-            "Record first [r]" => statusMessage;
-            showLED(0);
-        }
+        else <<< "Record first [r]" >>>;
     }
     else if (k == 'o')
     {
@@ -894,123 +775,6 @@ while (true)
     {
         eraseAll();
     }
-    // Speed controls
-    else if (k == '+')
-    {
-        mainSpeed * 1.1 => mainSpeed;
-        if (mainSpeed > 2.0) 2.0 => mainSpeed;
-        if (isPlaying) mainLoop.rate(mainSpeed * mainReverse);
-        "Speed: " + mainSpeed => statusMessage;
-        showLED(0);
-    }
-    else if (k == '-')
-    {
-        mainSpeed * 0.9 => mainSpeed;
-        if (mainSpeed < 0.5) 0.5 => mainSpeed;
-        if (isPlaying) mainLoop.rate(mainSpeed * mainReverse);
-        "Speed: " + mainSpeed => statusMessage;
-        showLED(0);
-    }
-    else if (k == '=')
-    {
-        1.0 => mainSpeed;
-        if (isPlaying) mainLoop.rate(mainSpeed * mainReverse);
-        "Speed: 1.0 (reset)" => statusMessage;
-        showLED(0);
-    }
-    // Reverse toggle
-    else if (k == 'v')
-    {
-        -1 * mainReverse => mainReverse;
-        if (isPlaying) mainLoop.rate(mainSpeed * mainReverse);
-        if (mainReverse == -1) "REVERSE ON" => statusMessage;
-        else "REVERSE OFF" => statusMessage;
-        showLED(0);
-    }
-    // Volume controls
-    else if (k == ']')
-    {
-        mainVolume + 0.1 => mainVolume;
-        if (mainVolume > 1.0) 1.0 => mainVolume;
-        masterGain.gain(mainVolume);
-        "Volume: " + mainVolume => statusMessage;
-        showLED(0);
-    }
-    else if (k == '[')
-    {
-        mainVolume - 0.1 => mainVolume;
-        if (mainVolume < 0.0) 0.0 => mainVolume;
-        masterGain.gain(mainVolume);
-        "Volume: " + mainVolume => statusMessage;
-        showLED(0);
-    }
-    // Pan controls
-    else if (k == '.')
-    {
-        mainPan + 0.1 => mainPan;
-        if (mainPan > 1.0) 1.0 => mainPan;
-        masterPan.pan(mainPan);
-        if (mainPan > 0) "Pan: R" + mainPan => statusMessage;
-        else if (mainPan < 0) "Pan: L" + (-mainPan) => statusMessage;
-        else "Pan: Center" => statusMessage;
-        showLED(0);
-    }
-    else if (k == ',')
-    {
-        mainPan - 0.1 => mainPan;
-        if (mainPan < -1.0) -1.0 => mainPan;
-        masterPan.pan(mainPan);
-        if (mainPan > 0) "Pan: R" + mainPan => statusMessage;
-        else if (mainPan < 0) "Pan: L" + (-mainPan) => statusMessage;
-        else "Pan: Center" => statusMessage;
-        showLED(0);
-    }
-    // Track volume controls (for selected track)
-    else if (k == '}')
-    {
-        if (selectedTrack == 0)
-        {
-            mainTrackVolume + 0.1 => mainTrackVolume;
-            if (mainTrackVolume > 1.0) 1.0 => mainTrackVolume;
-            if (isPlaying && mainLoopActive) mainLoop.gain(mainTrackVolume);
-            "Track 0 vol: " + mainTrackVolume => statusMessage;
-        }
-        else if (selectedTrack - 1 < overdubCount)
-        {
-            selectedTrack - 1 => int odIdx;
-            overdubVolumes[odIdx] + 0.1 => overdubVolumes[odIdx];
-            if (overdubVolumes[odIdx] > 1.0) 1.0 => overdubVolumes[odIdx];
-            if (isPlaying && overdubActive[odIdx]) overdubPlayers[odIdx].gain(overdubVolumes[odIdx]);
-            "Track " + selectedTrack + " vol: " + overdubVolumes[odIdx] => statusMessage;
-        }
-        showLED(0);
-    }
-    else if (k == '{')
-    {
-        if (selectedTrack == 0)
-        {
-            mainTrackVolume - 0.1 => mainTrackVolume;
-            if (mainTrackVolume < 0.0) 0.0 => mainTrackVolume;
-            if (isPlaying && mainLoopActive) mainLoop.gain(mainTrackVolume);
-            "Track 0 vol: " + mainTrackVolume => statusMessage;
-        }
-        else if (selectedTrack - 1 < overdubCount)
-        {
-            selectedTrack - 1 => int odIdx;
-            overdubVolumes[odIdx] - 0.1 => overdubVolumes[odIdx];
-            if (overdubVolumes[odIdx] < 0.0) 0.0 => overdubVolumes[odIdx];
-            if (isPlaying && overdubActive[odIdx]) overdubPlayers[odIdx].gain(overdubVolumes[odIdx]);
-            "Track " + selectedTrack + " vol: " + overdubVolumes[odIdx] => statusMessage;
-        }
-        showLED(0);
-    }
-    else if (k == '/')
-    {
-        0.0 => mainPan;
-        masterPan.pan(mainPan);
-        "Pan: Center (reset)" => statusMessage;
-        showLED(0);
-    }
     else if (k == 'x' || k == 27)  // 'x' key or ESC for emergency stop
     {
         <<< "EMERGENCY STOP - Exiting..." >>>;
@@ -1020,8 +784,6 @@ while (true)
     else if (k >= '0' && k <= '9')
     {
         k - '0' => int loopNum;
-        loopNum => selectedTrack;  // Update selected track
-        
         if (loopNum == 0)
         {
             // Toggle main loop
@@ -1029,11 +791,10 @@ while (true)
             {
                 !mainLoopActive => mainLoopActive;
                 // Control via gain for instant mute/unmute without sync issues
-                if (mainLoopActive) mainLoop.gain(mainTrackVolume);
+                if (mainLoopActive) mainLoop.gain(0.9);
                 else mainLoop.gain(0.0);
-                if (mainLoopActive) "Main loop ON" => statusMessage;
-                else "Main loop OFF" => statusMessage;
-                showLED(0);
+                if (mainLoopActive) <<< "Main loop ON" >>>;
+                else <<< "Main loop OFF" >>>;
             }
         }
         else
@@ -1043,11 +804,10 @@ while (true)
             {
                 !overdubActive[overdubIndex] => overdubActive[overdubIndex];
                 // Control via gain for instant mute/unmute without sync issues
-                if (overdubActive[overdubIndex]) overdubPlayers[overdubIndex].gain(overdubVolumes[overdubIndex]);
+                if (overdubActive[overdubIndex]) overdubPlayers[overdubIndex].gain(0.9);
                 else overdubPlayers[overdubIndex].gain(0.0);
-                if (overdubActive[overdubIndex]) "Overdub " + loopNum + " ON" => statusMessage;
-                else "Overdub " + loopNum + " OFF" => statusMessage;
-                showLED(0);
+                if (overdubActive[overdubIndex]) <<< "Overdub", loopNum, "ON" >>>;
+                else <<< "Overdub", loopNum, "OFF" >>>;
             }
         }
     }
