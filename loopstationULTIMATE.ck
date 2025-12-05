@@ -12,6 +12,14 @@ HidMsg blueTurnMsg;
 78 => int BUTTON_1;  // Page Down - Record/Overdub
 75 => int BUTTON_2;  // Page Up - Play/Stop
 
+// MIDI Controller Setup for Akai APC Mini (Optional)
+MidiIn midiIn;
+MidiMsg midiMsg;
+0 => int useMidi;
+
+// APC Mini fader CC numbers (48-55 for the 8 vertical faders)
+[48, 49, 50, 51, 52, 53, 54, 55] @=> int faderCC[];
+
 adc => Gain input => blackhole;
 input.gain(0.8);
 
@@ -469,6 +477,77 @@ fun void blueTurnListener()
     }
 }
 
+// Function to open Akai APC Mini MIDI controller (Optional)
+fun int openMidiController()
+{
+    // Try to find and open APC Mini
+    for (0 => int i; i < 8; i++)  // Check first 8 MIDI devices
+    {
+        if (midiIn.open(i))
+        {
+            // Check if it's an APC Mini (name contains "APC")
+            if (midiIn.name().find("APC") >= 0 || midiIn.name().find("apc") >= 0)
+            {
+                <<< "✓ MIDI Controller connected:", midiIn.name() >>>;
+                return 1;
+            }
+            else
+            {
+                // Not APC Mini, close and try next
+                // Note: ChucK doesn't have midiIn.close(), but opening another will close previous
+            }
+        }
+    }
+    <<< "APC Mini not found - keyboard controls only" >>>;
+    return 0;
+}
+
+// MIDI listener thread for APC Mini faders
+fun void midiListener()
+{
+    while (true)
+    {
+        midiIn => now;
+        
+        while (midiIn.recv(midiMsg))
+        {
+            // Check if it's a Control Change message (status byte 0xB0-0xBF)
+            if ((midiMsg.data1 & 0xF0) == 0xB0)
+            {
+                midiMsg.data2 => int ccNumber;  // CC number
+                midiMsg.data3 => int ccValue;   // CC value (0-127)
+                
+                // Convert MIDI value (0-127) to volume (0.0-1.0)
+                ccValue / 127.0 => float volume;
+                
+                // Check which fader was moved
+                for (0 => int i; i < faderCC.size(); i++)
+                {
+                    if (ccNumber == faderCC[i])
+                    {
+                        // Fader 0 controls main loop, faders 1-7 control overdubs 1-7
+                        if (i == 0)
+                        {
+                            volume => mainTrackVolume;
+                            if (isPlaying && mainLoopActive) mainLoop.gain(mainTrackVolume);
+                        }
+                        else if (i - 1 < overdubCount)
+                        {
+                            i - 1 => int odIdx;
+                            volume => overdubVolumes[odIdx];
+                            if (isPlaying && overdubActive[odIdx]) 
+                            {
+                                overdubPlayers[odIdx].gain(overdubVolumes[odIdx]);
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+    }
+}
+
 // ------------------------------------------------------
 // Metronome Click
 // ------------------------------------------------------
@@ -788,6 +867,20 @@ if (openBlueTurn())
 else
 {
     <<< "BlueTurn not found - using keyboard only" >>>;
+}
+
+// Try to connect MIDI Controller (APC Mini)
+<<< "\nAttempting to connect Akai APC Mini..." >>>;
+if (openMidiController())
+{
+    1 => useMidi;
+    spork ~ midiListener();
+    <<< "✓ APC Mini ready! Faders control track volumes:" >>>;
+    <<< "  Fader 1: Main Loop | Faders 2-8: Overdubs 1-7" >>>;
+}
+else
+{
+    <<< "APC Mini not found - using keyboard volume controls only" >>>;
 }
 
 <<< "\nSelect mode:" >>>;
