@@ -325,17 +325,11 @@ fun int loadSession(string filename)
 // LED RING: EXACT o and *
 // ------------------------------------------------------
 
-// --- show LED ring in console with three stable lines ---
+// --- show LED ring in console - SIMPLE VERSION FOR LINUX ---
+// Uses single-line carriage return instead of ANSI cursor movement
 fun void showLED(int pos)
 {
-    // Initialize display with 3 blank lines on first call
-    if (!displayInitialized)
-    {
-        chout <= "\n\n\n";  // Create 3 lines
-        1 => displayInitialized;
-    }
-    
-    // Build LED ring (Line 3)
+    // Build LED ring
     "" => string leds;
     for (0 => int i; i < ledCount; i++)
     {
@@ -346,78 +340,18 @@ fun void showLED(int pos)
         if ((i + 1) % 4 == 0 && i < ledCount - 1) leds + " " => leds;
     }
     
-    // Build track status (Line 2) with effects display
-    "Tracks: " => string tracks;
-    
-    // Main loop (track 0)
-    if (selectedTrack == 0) tracks + "\033[1m" => tracks;  // Bold for selected
-    tracks + "[0:" => tracks;
-    if (mainLoopActive) tracks + "*" => tracks;
-    else tracks + "o" => tracks;
-    
-    // Show effects for main loop
-    "" => string fx;
-    if (mainSpeed != 1.0) {
-        if (fx != "") fx + "," => fx;
-        fx + "s:" => fx;
-        Math.floor(mainSpeed * 10 + 0.5) / 10.0 => float roundedSpeed;
-        fx + roundedSpeed => fx;
+    // Build compact status
+    "" => string status;
+    if (statusMessage.length() > 0) {
+        status + "[" + statusMessage + "] " => status;
     }
-    if (mainReverse == -1) {
-        if (fx != "") fx + "," => fx;
-        fx + "r" => fx;
-    }
-    if (mainOctaveActive) {
-        if (fx != "") fx + "," => fx;
-        fx + "oct" => fx;
-    }
-    if (fx != "") tracks + " " + fx => tracks;
-    tracks + "]" => tracks;
-    if (selectedTrack == 0) tracks + "\033[0m" => tracks;  // Reset bold
+    status + leds => status;
     
-    // Overdub tracks
-    for (0 => int i; i < overdubCount; i++)
-    {
-        tracks + " " => tracks;
-        if (selectedTrack == i + 1) tracks + "\033[1m" => tracks;  // Bold for selected
-        tracks + "[" + (i+1) + ":" => tracks;
-        if (overdubActive[i]) tracks + "*" => tracks;
-        else tracks + "o" => tracks;
-        
-        // Show effects for this overdub
-        "" => string ofx;
-        if (overdubSpeeds[i] != 1.0) {
-            if (ofx != "") ofx + "," => ofx;
-            ofx + "s:" => ofx;
-            Math.floor(overdubSpeeds[i] * 10 + 0.5) / 10.0 => float rs;
-            ofx + rs => ofx;
-        }
-        if (overdubReverse[i] == -1) {
-            if (ofx != "") ofx + "," => ofx;
-            ofx + "r" => ofx;
-        }
-        if (overdubOctaveActive[i]) {
-            if (ofx != "") ofx + "," => ofx;
-            ofx + "oct" => ofx;
-        }
-        if (ofx != "") tracks + " " + ofx => tracks;
-        tracks + "]" => tracks;
-        if (selectedTrack == i + 1) tracks + "\033[0m" => tracks;  // Reset bold
-    }
+    // Pad to 79 chars to clear previous content, then add \r
+    while (status.length() < 79) status + " " => status;
     
-    // Pad lines to clear previous content (fixed width 80 chars)
-    statusMessage => string msg;
-    tracks => string trk;
-    leds => string led;
-    while (msg.length() < 80) msg + " " => msg;
-    while (trk.length() < 80) trk + " " => trk;
-    while (led.length() < 80) led + " " => led;
-    
-    // Move cursor up 3 lines to start, print all 3 lines, cursor stays at end
-    chout <= "\033[3A";           // Move up 3 lines
-    chout <= "\r" <= msg;         // Line 1: Status (no newline, cursor at end of line 1)
-    chout <= "\n\r" <= trk;       // Line 2: Tracks (newline first, then overwrite)
-    chout <= "\n\r" <= led;       // Line 3: LEDs (newline first, then overwrite)
+    // Use carriage return to overwrite same line (works on all terminals)
+    chout <= "\r" <= status;
     chout.flush();
 }
 
