@@ -321,10 +321,9 @@ fun int loadSession(string filename)
     return 1;
 }
 
-// --- DISPLAY FOR LINUX/RPI (NO SCROLL) ---
-// Only prints when something CHANGES - no continuous output
+// --- DISPLAY FOR LINUX/RPI (COMPLETELY SILENT) ---
+// showLED does NOTHING - use notify() for explicit messages only
 0 => int headerPrinted;
-"" => string lastTrackState;  // Track last state to detect changes
 
 // Print header with instructions (once at startup)
 fun void printHeader()
@@ -340,59 +339,20 @@ fun void printHeader()
     <<< "====================================================" >>>;
 }
 
-// Build track status string
-fun string getTrackState()
+// Explicit notification function - ONLY WAY TO PRINT
+fun void notify(string msg)
 {
-    "" => string state;
-    
-    // Mode and playing status
-    if (isRecording) state + "REC " => state;
-    else if (isPlaying) state + "PLAY" => state;
-    else state + "STOP" => state;
-    
-    state + " | " => state;
-    
-    // Main loop
-    if (!loopExists) state + "[no loop]" => state;
-    else {
-        if (mainLoopActive) state + "[0:ON]" => state;
-        else state + "[0:--]" => state;
-        
-        // Overdubs
-        for (0 => int i; i < overdubCount; i++)
-        {
-            if (overdubActive[i]) state + "[" + (i+1) + ":ON]" => state;
-            else state + "[" + (i+1) + ":--]" => state;
-        }
-    }
-    
-    return state;
+    <<< msg >>>;
 }
 
-// Print status - ONLY when it changes
-fun void printStatus()
-{
-    getTrackState() => string currentState;
-    
-    // Only print if state changed
-    if (currentState != lastTrackState)
-    {
-        <<< currentState >>>;
-        currentState => lastTrackState;
-    }
-}
-
-// Main display function - called every beat subdivision but only prints on change
+// showLED - DOES NOTHING (completely silent)
+// This is called frequently but we don't want any output
 fun void showLED(int pos)
 {
-    // Print header once
+    // Print header once on first call only
     printHeader();
     
-    // Check for state changes (doesn't print if unchanged)
-    printStatus();
-    
-    // Don't print beat position - it would scroll
-    // The audio is the feedback!
+    // NO OUTPUT - audio is the feedback!
 }
 
 // ------------------------------------------------------
@@ -1196,7 +1156,7 @@ fun void startPlayback()
 
     loopStart.broadcast();
 
-    "PLAYING..." => statusMessage;
+    notify("PLAYING...");
     showLED(0);
 
     while (isPlaying && loopExists)
@@ -1258,7 +1218,7 @@ fun void startPlayback()
     }
 
     0 => isPlaying;
-    <<< "STOPPED." >>>;
+    notify("STOPPED.");
 }
 
 // ------------------------------------------------------
@@ -1770,9 +1730,8 @@ while (true)
                 // Control via gain for instant mute/unmute without sync issues
                 if (mainLoopActive) mainLoop.gain(mainTrackVolume);
                 else mainLoop.gain(0.0);
-                if (mainLoopActive) "Main loop ON" => statusMessage;
-                else "Main loop OFF" => statusMessage;
-                showLED(0);
+                if (mainLoopActive) notify("Main loop ON");
+                else notify("Main loop OFF");
             }
         }
         else
@@ -1784,9 +1743,8 @@ while (true)
                 // Control via gain for instant mute/unmute without sync issues
                 if (overdubActive[overdubIndex]) overdubPlayers[overdubIndex].gain(overdubVolumes[overdubIndex]);
                 else overdubPlayers[overdubIndex].gain(0.0);
-                if (overdubActive[overdubIndex]) "Overdub " + loopNum + " ON" => statusMessage;
-                else "Overdub " + loopNum + " OFF" => statusMessage;
-                showLED(0);
+                if (overdubActive[overdubIndex]) notify("Overdub " + loopNum + " ON");
+                else notify("Overdub " + loopNum + " OFF");
             }
         }
     }
