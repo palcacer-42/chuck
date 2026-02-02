@@ -325,10 +325,17 @@ fun int loadSession(string filename)
 // LED RING: EXACT o and *
 // ------------------------------------------------------
 
-// --- show LED ring in console - SIMPLE VERSION FOR LINUX ---
-// Uses single-line carriage return instead of ANSI cursor movement
+// --- show LED ring in console - MINIMAL VERSION FOR LINUX ---
+// Only prints once per loop to avoid scrolling on terminals where \r doesn't work
+-1 => int lastPrintedPos;  // Track last printed position
+
 fun void showLED(int pos)
 {
+    // Only print once per loop cycle (when pos == 0)
+    // This prevents scrolling on terminals where \r doesn't work
+    if (pos != 0 && lastPrintedPos >= 0) return;
+    pos => lastPrintedPos;
+    
     // Build LED ring
     "" => string leds;
     for (0 => int i; i < ledCount; i++)
@@ -340,19 +347,12 @@ fun void showLED(int pos)
         if ((i + 1) % 4 == 0 && i < ledCount - 1) leds + " " => leds;
     }
     
-    // Build compact status
-    "" => string status;
+    // Print status + LED ring (one line per loop cycle)
     if (statusMessage.length() > 0) {
-        status + "[" + statusMessage + "] " => status;
+        <<< statusMessage, leds >>>;
+    } else {
+        <<< leds >>>;
     }
-    status + leds => status;
-    
-    // Pad to 79 chars to clear previous content, then add \r
-    while (status.length() < 79) status + " " => status;
-    
-    // Use carriage return to overwrite same line (works on all terminals)
-    chout <= "\r" <= status;
-    chout.flush();
 }
 
 // ------------------------------------------------------
