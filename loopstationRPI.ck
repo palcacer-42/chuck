@@ -501,13 +501,13 @@ fun void recordMeasureLoop()
         notify("Waiting for next loop...");
         showLED(0);
         loopStart => now;
-        "RECORDING " + beatsPerLoop + notify("-beat loop...");
+        notify("RECORDING " + beatsPerLoop + "-beat loop...");
         showLED(0);
     }
     else
     {
         // Only use metronome countdown when recording the first loop (one extra beat)
-        "RECORDING " + (beatsPerLoop + 1) + notify(" beats with countdown...");
+        notify("RECORDING " + (beatsPerLoop + 1) + " beats with countdown...");
         showLED(0);
         
         // --- Metronome countdown ---
@@ -583,7 +583,7 @@ fun void stopFreeRecording()
     
     0 => isRecording;
     1 => loopExists;
-    "o LOOP RECORDED! " + (loopLength/second) + notify(" sec");
+    notify("o LOOP RECORDED! " + (loopLength/second) + " sec");
     showLED(0);
     
     // Update MIDI LEDs (main loop is now available)
@@ -1248,12 +1248,12 @@ fun void recordOverdub()
     }
 
     // Both modes: Wait for loop start for sync
-    "OVERDUB " + (overdubCount + 1) + notify(" - waiting...");
+    notify("OVERDUB " + (overdubCount + 1) + " - waiting...");
     showLED(0);
     loopStart => now;
     
     1 => isOverdubbing;
-    "OVERDUB " + (overdubCount + 1) + notify(" RECORDING...");
+    notify("OVERDUB " + (overdubCount + 1) + " RECORDING...");
     showLED(0);
     
     // Configure LiSa buffer for this overdub WITH LOOPING ENABLED
