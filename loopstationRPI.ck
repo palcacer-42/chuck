@@ -321,10 +321,10 @@ fun int loadSession(string filename)
     return 1;
 }
 
-// --- DISPLAY FOR LINUX/RPI ---
-// Clean layout: Instructions -> Tracks -> Beats -> Notifications
+// --- DISPLAY FOR LINUX/RPI (NO SCROLL) ---
+// Only prints when something CHANGES - no continuous output
 0 => int headerPrinted;
-"" => string lastStatus;  // Track last status to avoid duplicate prints
+"" => string lastTrackState;  // Track last state to detect changes
 
 // Print header with instructions (once at startup)
 fun void printHeader()
@@ -335,74 +335,64 @@ fun void printHeader()
     <<< "====================================================" >>>;
     <<< "           LOOPSTATION RPI" >>>;
     <<< "====================================================" >>>;
-    <<< "CONTROLS:" >>>;
-    <<< "  [r] Record/Overdub   [SPACE] Play/Stop" >>>;
-    <<< "  [e] Erase all        [m] Toggle mode" >>>;
-    <<< "  [1-9] Toggle track   [t] Tap tempo" >>>;
-    <<< "  [q] Quit" >>>;
+    <<< "[r] Record/Overdub  [SPACE] Play/Stop  [e] Erase" >>>;
+    <<< "[1-9] Toggle track  [m] Mode  [t] Tempo  [q] Quit" >>>;
     <<< "====================================================" >>>;
-    <<< "" >>>;
 }
 
 // Build track status string
-fun string getTrackStatus()
+fun string getTrackState()
 {
-    "TRACKS: " => string status;
+    "" => string state;
+    
+    // Mode and playing status
+    if (isRecording) state + "REC " => state;
+    else if (isPlaying) state + "PLAY" => state;
+    else state + "STOP" => state;
+    
+    state + " | " => state;
     
     // Main loop
-    if (mainLoopActive) status + "[0:ON]" => status;
-    else status + "[0:--]" => status;
-    
-    // Overdubs
-    for (0 => int i; i < overdubCount; i++)
-    {
-        if (overdubActive[i]) status + " [" + (i+1) + ":ON]" => status;
-        else status + " [" + (i+1) + ":--]" => status;
-    }
-    
-    return status;
-}
-
-// Build beat LED string
-fun string getBeatLED(int pos)
-{
-    "BEATS:  " => string leds;
-    for (0 => int i; i < ledCount; i++)
-    {
-        if (i == pos) leds + "*" => leds;
-        else leds + "o" => leds;
+    if (!loopExists) state + "[no loop]" => state;
+    else {
+        if (mainLoopActive) state + "[0:ON]" => state;
+        else state + "[0:--]" => state;
         
-        // Add spacing every beat
-        if ((i + 1) % 4 == 0 && i < ledCount - 1) leds + " " => leds;
+        // Overdubs
+        for (0 => int i; i < overdubCount; i++)
+        {
+            if (overdubActive[i]) state + "[" + (i+1) + ":ON]" => state;
+            else state + "[" + (i+1) + ":--]" => state;
+        }
     }
-    return leds;
+    
+    return state;
 }
 
-// Main display function
+// Print status - ONLY when it changes
+fun void printStatus()
+{
+    getTrackState() => string currentState;
+    
+    // Only print if state changed
+    if (currentState != lastTrackState)
+    {
+        <<< currentState >>>;
+        currentState => lastTrackState;
+    }
+}
+
+// Main display function - called every beat subdivision but only prints on change
 fun void showLED(int pos)
 {
     // Print header once
     printHeader();
     
-    // Only update display once per loop (at pos 0)
-    if (pos != 0) return;
+    // Check for state changes (doesn't print if unchanged)
+    printStatus();
     
-    // Build current status
-    getTrackStatus() => string tracks;
-    getBeatLED(pos) => string beats;
-    
-    // Always print tracks and beats
-    <<< tracks >>>;
-    <<< beats >>>;
-    
-    // Print action notification if changed
-    if (statusMessage != lastStatus && statusMessage.length() > 0)
-    {
-        <<< "ACTION:", statusMessage >>>;
-        statusMessage => lastStatus;
-    }
-    
-    <<< "" >>>;  // Blank line separator
+    // Don't print beat position - it would scroll
+    // The audio is the feedback!
 }
 
 // ------------------------------------------------------
