@@ -498,16 +498,16 @@ fun void recordMeasureLoop()
     // If playback is active, wait for the next loop to start for sync
     if (isPlaying)
     {
-        "Waiting for next loop..." => statusMessage;
+        notify("Waiting for next loop...");
         showLED(0);
         loopStart => now;
-        "RECORDING " + beatsPerLoop + "-beat loop..." => statusMessage;
+        "RECORDING " + beatsPerLoop + notify("-beat loop...");
         showLED(0);
     }
     else
     {
         // Only use metronome countdown when recording the first loop (one extra beat)
-        "RECORDING " + (beatsPerLoop + 1) + " beats with countdown..." => statusMessage;
+        "RECORDING " + (beatsPerLoop + 1) + notify(" beats with countdown...");
         showLED(0);
         
         // --- Metronome countdown ---
@@ -542,7 +542,7 @@ fun void recordMeasureLoop()
     mainLoop.loopEnd(loopLength);  // Set loop end AFTER recording
     0 => isRecording;
     1 => loopExists;
-    "LOOP RECORDED!" => statusMessage;
+    notify("LOOP RECORDED!");
     showLED(0);
     
     // Start playback directly (not spawned - we're already in a spawned shred)
@@ -556,7 +556,7 @@ fun void startFreeRecording()
     1 => freeLoop; // this loop is free-mode based
     now => recordStart;
     
-    "* RECORDING... Press [r] to stop" => statusMessage;
+    notify("* RECORDING... Press [r] to stop");
     showLED(0);
     
     // Set a large buffer size (e.g., 60 seconds max)
@@ -583,7 +583,7 @@ fun void stopFreeRecording()
     
     0 => isRecording;
     1 => loopExists;
-    "o LOOP RECORDED! " + (loopLength/second) + " sec" => statusMessage;
+    "o LOOP RECORDED! " + (loopLength/second) + notify(" sec");
     showLED(0);
     
     // Update MIDI LEDs (main loop is now available)
@@ -660,7 +660,7 @@ fun void blueTurnListener()
                     }
                     else 
                     {
-                        "Record first with Button 1" => statusMessage;
+                        notify("Record first with Button 1");
                         showLED(0);
                     }
                 }
@@ -1228,32 +1228,32 @@ fun void recordOverdub()
 {
     if (!isPlaying || !loopExists)
     {
-        "Play loop first [p]" => statusMessage;
+        notify("Play loop first [p]");
         showLED(0);
         return;
     }
 
     if (isOverdubbing)
     {
-        "Overdub in progress..." => statusMessage;
+        notify("Overdub in progress...");
         showLED(0);
         return;
     }
 
     if (overdubCount >= 10)
     {
-        "Max overdubs (10) reached!" => statusMessage;
+        notify("Max overdubs (10) reached!");
         showLED(0);
         return;
     }
 
     // Both modes: Wait for loop start for sync
-    "OVERDUB " + (overdubCount + 1) + " - waiting..." => statusMessage;
+    "OVERDUB " + (overdubCount + 1) + notify(" - waiting...");
     showLED(0);
     loopStart => now;
     
     1 => isOverdubbing;
-    "OVERDUB " + (overdubCount + 1) + " RECORDING..." => statusMessage;
+    "OVERDUB " + (overdubCount + 1) + notify(" RECORDING...");
     showLED(0);
     
     // Configure LiSa buffer for this overdub WITH LOOPING ENABLED
@@ -1286,8 +1286,7 @@ fun void recordOverdub()
     1 => overdubActive[overdubCount];
     
     overdubCount++;
-    "OVERDUB " + overdubCount + " DONE! Total: " + overdubCount => statusMessage;
-    showLED(0);
+    notify("OVERDUB " + overdubCount + " DONE!");
     
     // Update MIDI LEDs (new overdub track is now available)
     updateTrackLEDs(overdubCount);  // overdubCount already incremented, so this is the new track
@@ -1298,14 +1297,14 @@ fun void undoLastOverdub()
 {
     if (!loopExists)
     {
-        "No loop exists" => statusMessage;
+        notify("No loop exists");
         showLED(0);
         return;
     }
 
     if (overdubCount == 0)
     {
-        "No overdub to undo" => statusMessage;
+        notify("No overdub to undo");
         showLED(0);
         return;
     }
@@ -1328,7 +1327,7 @@ fun void undoLastOverdub()
     // Mark as inactive (will be skipped on next playback restart)
     0 => overdubActive[lastIndex];
 
-    "UNDID overdub " + (lastIndex + 1) + " - Remaining: " + overdubCount => statusMessage;
+    notify("UNDID overdub " + (lastIndex + 1));
     showLED(0);
 }
 
@@ -1337,7 +1336,7 @@ fun void eraseAll()
 {
     if (!loopExists)
     {
-        "Nothing to erase" => statusMessage;
+        notify("Nothing to erase");
         showLED(0);
         return;
     }
@@ -1392,7 +1391,7 @@ fun void eraseAll()
     1 => mainLoopActive;
     0 => freeLoop;
     
-    "ALL CLEARED!" => statusMessage;
+    notify("ALL CLEARED!");
     showLED(0);
     
     // Turn off all MIDI LEDs
@@ -1558,7 +1557,7 @@ while (true)
         if (isPlaying) 0 => isPlaying;
         else if (loopExists) spork ~ startPlayback();
         else {
-            "Record first [r]" => statusMessage;
+            notify("Record first [r]");
             showLED(0);
         }
     }
@@ -1583,12 +1582,12 @@ while (true)
             (current / 1::second) $ int => int timestamp;
             "session_" + timestamp + ".cks" => string sessionFile;
             saveSession(sessionFile);
-            "Session saved" => statusMessage;
+            notify("Session saved");
             showLED(0);
         }
         else
         {
-            "Nothing to save" => statusMessage;
+            notify("Nothing to save");
             showLED(0);
         }
     }
@@ -1598,7 +1597,7 @@ while (true)
         mainSpeed * 1.1 => mainSpeed;
         if (mainSpeed > 2.0) 2.0 => mainSpeed;
         if (isPlaying) mainLoop.rate(mainSpeed * mainReverse);
-        "Speed: " + mainSpeed => statusMessage;
+        notify("Speed: " + mainSpeed);
         showLED(0);
     }
     else if (k == '-')
@@ -1606,14 +1605,14 @@ while (true)
         mainSpeed * 0.9 => mainSpeed;
         if (mainSpeed < 0.5) 0.5 => mainSpeed;
         if (isPlaying) mainLoop.rate(mainSpeed * mainReverse);
-        "Speed: " + mainSpeed => statusMessage;
+        notify("Speed: " + mainSpeed);
         showLED(0);
     }
     else if (k == '=')
     {
         1.0 => mainSpeed;
         if (isPlaying) mainLoop.rate(mainSpeed * mainReverse);
-        "Speed: 1.0 (reset)" => statusMessage;
+        notify("Speed: 1.0 (reset)");
         showLED(0);
     }
     // Reverse toggle
@@ -1621,8 +1620,8 @@ while (true)
     {
         -1 * mainReverse => mainReverse;
         if (isPlaying) mainLoop.rate(mainSpeed * mainReverse);
-        if (mainReverse == -1) "REVERSE ON" => statusMessage;
-        else "REVERSE OFF" => statusMessage;
+        if (mainReverse == -1) notify("REVERSE ON");
+        else notify("REVERSE OFF");
         showLED(0);
     }
     // Volume controls
@@ -1631,7 +1630,7 @@ while (true)
         mainVolume + 0.1 => mainVolume;
         if (mainVolume > 1.0) 1.0 => mainVolume;
         masterGain.gain(mainVolume);
-        "Volume: " + mainVolume => statusMessage;
+        notify("Volume: " + mainVolume);
         showLED(0);
     }
     else if (k == '[')
@@ -1639,7 +1638,7 @@ while (true)
         mainVolume - 0.1 => mainVolume;
         if (mainVolume < 0.0) 0.0 => mainVolume;
         masterGain.gain(mainVolume);
-        "Volume: " + mainVolume => statusMessage;
+        notify("Volume: " + mainVolume);
         showLED(0);
     }
     // Pan controls
@@ -1648,20 +1647,18 @@ while (true)
         mainPan + 0.1 => mainPan;
         if (mainPan > 1.0) 1.0 => mainPan;
         masterPan.pan(mainPan);
-        if (mainPan > 0) "Pan: R" + mainPan => statusMessage;
-        else if (mainPan < 0) "Pan: L" + (-mainPan) => statusMessage;
-        else "Pan: Center" => statusMessage;
-        showLED(0);
+        if (mainPan > 0) notify("Pan: R" + mainPan);
+        else if (mainPan < 0) notify("Pan: L" + (-mainPan));
+        else notify("Pan: Center");
     }
     else if (k == ',')
     {
         mainPan - 0.1 => mainPan;
         if (mainPan < -1.0) -1.0 => mainPan;
         masterPan.pan(mainPan);
-        if (mainPan > 0) "Pan: R" + mainPan => statusMessage;
-        else if (mainPan < 0) "Pan: L" + (-mainPan) => statusMessage;
-        else "Pan: Center" => statusMessage;
-        showLED(0);
+        if (mainPan > 0) notify("Pan: R" + mainPan);
+        else if (mainPan < 0) notify("Pan: L" + (-mainPan));
+        else notify("Pan: Center");
     }
     // Track volume controls (for selected track)
     else if (k == '}')
@@ -1671,7 +1668,7 @@ while (true)
             mainTrackVolume + 0.1 => mainTrackVolume;
             if (mainTrackVolume > 1.0) 1.0 => mainTrackVolume;
             if (isPlaying && mainLoopActive) mainLoop.gain(mainTrackVolume);
-            "Track 0 vol: " + mainTrackVolume => statusMessage;
+            notify("Track 0 vol: " + mainTrackVolume);
         }
         else if (selectedTrack - 1 < overdubCount)
         {
@@ -1679,7 +1676,7 @@ while (true)
             overdubVolumes[odIdx] + 0.1 => overdubVolumes[odIdx];
             if (overdubVolumes[odIdx] > 1.0) 1.0 => overdubVolumes[odIdx];
             if (isPlaying && overdubActive[odIdx]) overdubPlayers[odIdx].gain(overdubVolumes[odIdx]);
-            "Track " + selectedTrack + " vol: " + overdubVolumes[odIdx] => statusMessage;
+            notify("Track " + selectedTrack + " vol: " + overdubVolumes[odIdx]);
         }
         showLED(0);
     }
@@ -1690,7 +1687,7 @@ while (true)
             mainTrackVolume - 0.1 => mainTrackVolume;
             if (mainTrackVolume < 0.0) 0.0 => mainTrackVolume;
             if (isPlaying && mainLoopActive) mainLoop.gain(mainTrackVolume);
-            "Track 0 vol: " + mainTrackVolume => statusMessage;
+            notify("Track 0 vol: " + mainTrackVolume);
         }
         else if (selectedTrack - 1 < overdubCount)
         {
@@ -1698,7 +1695,7 @@ while (true)
             overdubVolumes[odIdx] - 0.1 => overdubVolumes[odIdx];
             if (overdubVolumes[odIdx] < 0.0) 0.0 => overdubVolumes[odIdx];
             if (isPlaying && overdubActive[odIdx]) overdubPlayers[odIdx].gain(overdubVolumes[odIdx]);
-            "Track " + selectedTrack + " vol: " + overdubVolumes[odIdx] => statusMessage;
+            notify("Track " + selectedTrack + " vol: " + overdubVolumes[odIdx]);
         }
         showLED(0);
     }
@@ -1706,7 +1703,7 @@ while (true)
     {
         0.0 => mainPan;
         masterPan.pan(mainPan);
-        "Pan: Center (reset)" => statusMessage;
+        notify("Pan: Center (reset)");
         showLED(0);
     }
     else if (k == 'x' || k == 27)  // 'x' key or ESC for emergency stop
